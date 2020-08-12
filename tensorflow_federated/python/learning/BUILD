@@ -36,7 +36,9 @@ py_library(
         ":model",
         ":model_utils",
         "//tensorflow_federated/python/common_libs:py_typecheck",
-        "//tensorflow_federated/python/core",
+        "//tensorflow_federated/python/core/templates:iterative_process",
+        "//tensorflow_federated/python/core/templates:measured_process",
+        "//tensorflow_federated/python/core/utils:computation_utils",
         "//tensorflow_federated/python/learning/framework:optimizer_utils",
         "//tensorflow_federated/python/tensorflow_libs:tensor_utils",
     ],
@@ -54,7 +56,9 @@ py_test(
         ":model_examples",
         ":model_utils",
         "//tensorflow_federated/python/common_libs:test",
-        "//tensorflow_federated/python/core",
+        "//tensorflow_federated/python/core/api:intrinsics",
+        "//tensorflow_federated/python/core/backends/native:execution_contexts",
+        "//tensorflow_federated/python/core/utils:computation_utils",
         "//tensorflow_federated/python/learning/framework:optimizer_utils",
     ],
 )
@@ -65,7 +69,11 @@ py_library(
     srcs_version = "PY3",
     deps = [
         ":model_utils",
-        "//tensorflow_federated/python/core",
+        "//tensorflow_federated/python/core/api:computation_types",
+        "//tensorflow_federated/python/core/api:computations",
+        "//tensorflow_federated/python/core/api:intrinsics",
+        "//tensorflow_federated/python/core/api:placements",
+        "//tensorflow_federated/python/core/utils:tf_computation_utils",
     ],
 )
 
@@ -80,7 +88,9 @@ py_test(
         ":model",
         ":model_utils",
         "//tensorflow_federated/python/common_libs:test",
-        "//tensorflow_federated/python/core",
+        "//tensorflow_federated/python/core/api:computations",
+        "//tensorflow_federated/python/core/api:intrinsics",
+        "//tensorflow_federated/python/core/backends/native:execution_contexts",
     ],
 )
 
@@ -92,7 +102,9 @@ py_library(
         ":model",
         ":model_utils",
         "//tensorflow_federated/python/common_libs:py_typecheck",
-        "//tensorflow_federated/python/core",
+        "//tensorflow_federated/python/core/templates:iterative_process",
+        "//tensorflow_federated/python/core/templates:measured_process",
+        "//tensorflow_federated/python/core/utils:computation_utils",
         "//tensorflow_federated/python/learning/framework:optimizer_utils",
         "//tensorflow_federated/python/tensorflow_libs:tensor_utils",
     ],
@@ -110,6 +122,7 @@ py_test(
         ":model_examples",
         ":model_utils",
         "//tensorflow_federated/python/common_libs:test",
+        "//tensorflow_federated/python/core/backends/native:execution_contexts",
     ],
 )
 
@@ -122,7 +135,10 @@ py_library(
         ":model_utils",
         "//tensorflow_federated/python/common_libs:py_typecheck",
         "//tensorflow_federated/python/common_libs:structure",
-        "//tensorflow_federated/python/core",
+        "//tensorflow_federated/python/core/api:computation_types",
+        "//tensorflow_federated/python/core/api:computations",
+        "//tensorflow_federated/python/core/api:intrinsics",
+        "//tensorflow_federated/python/core/api:placements",
     ],
 )
 
@@ -137,7 +153,9 @@ py_test(
         ":model_examples",
         ":model_utils",
         "//tensorflow_federated/python/common_libs:test",
-        "//tensorflow_federated/python/core",
+        "//tensorflow_federated/python/core/api:computation_types",
+        "//tensorflow_federated/python/core/api:computations",
+        "//tensorflow_federated/python/core/backends/native:execution_contexts",
     ],
 )
 
@@ -153,7 +171,8 @@ py_library(
     srcs_version = "PY3",
     deps = [
         ":model",
-        "//tensorflow_federated/python/core",
+        "//tensorflow_federated/python/core/api:computations",
+        "//tensorflow_federated/python/core/api:intrinsics",
     ],
 )
 
@@ -166,7 +185,8 @@ py_test(
     deps = [
         ":model_examples",
         "//tensorflow_federated/python/common_libs:test",
-        "//tensorflow_federated/python/core",
+        "//tensorflow_federated/python/core/api:computations",
+        "//tensorflow_federated/python/core/backends/native:execution_contexts",
     ],
 )
 
@@ -178,7 +198,8 @@ py_library(
         ":model",
         "//tensorflow_federated/python/common_libs:py_typecheck",
         "//tensorflow_federated/python/common_libs:structure",
-        "//tensorflow_federated/python/core",
+        "//tensorflow_federated/python/core/api:computation_types",
+        "//tensorflow_federated/python/core/impl/types:type_conversions",
     ],
 )
 
@@ -189,7 +210,12 @@ py_library(
     deps = [
         ":model_utils",
         "//tensorflow_federated/python/common_libs:py_typecheck",
-        "//tensorflow_federated/python/core",
+        "//tensorflow_federated/python/core/api:computation_types",
+        "//tensorflow_federated/python/core/api:computations",
+        "//tensorflow_federated/python/core/api:intrinsics",
+        "//tensorflow_federated/python/core/api:placements",
+        "//tensorflow_federated/python/core/utils:federated_aggregations",
+        "//tensorflow_federated/python/core/utils:tf_computation_utils",
     ],
 )
 
@@ -203,7 +229,8 @@ py_test(
         ":model_examples",
         ":model_utils",
         "//tensorflow_federated/python/common_libs:test",
-        "//tensorflow_federated/python/core",
+        "//tensorflow_federated/python/core/api:computation_types",
+        "//tensorflow_federated/python/core/api:computations",
     ],
 )
 
@@ -218,6 +245,7 @@ py_test(
         ":model_utils",
         ":personalization_eval",
         "//tensorflow_federated/python/common_libs:test",
-        "//tensorflow_federated/python/core",
+        "//tensorflow_federated/python/core/api:computation_types",
+        "//tensorflow_federated/python/core/backends/native:execution_contexts",
     ],
 )

@@ -19,9 +19,12 @@ import warnings
 
 import tensorflow as tf
 
-from tensorflow_federated.python import core as tff
 from tensorflow_federated.python.common_libs import py_typecheck
 from tensorflow_federated.python.common_libs import structure
+from tensorflow_federated.python.core.api import computation_types
+from tensorflow_federated.python.core.api import computations
+from tensorflow_federated.python.core.api import intrinsics
+from tensorflow_federated.python.core.api import placements
 from tensorflow_federated.python.learning import model as model_lib
 from tensorflow_federated.python.learning import model_utils
 
@@ -98,11 +101,11 @@ def from_keras_model(
       has multiple outputs. If multiple outputs are present, the model will
       attempt to minimize the sum of all individual losses (optionally weighted
       using the `loss_weights` argument).
-    input_spec: A structure of `tf.TensorSpec`s specifying the type of arguments
-      the model expects. Notice this must be a compound structure of two
-      elements, specifying both the data fed into the model to generate
-      predictions, as its first element, as well as the expected type of the
-      ground truth as its second.
+    input_spec: A structure of `tf.TensorSpec`s or `tff.Type` specifying the
+      type of arguments the model expects. Notice this must be a compound
+      structure of two elements, specifying both the data fed into the model to
+      generate predictions, as its first element, as well as the expected type
+      of the ground truth as its second.
     loss_weights: (Optional) A list of Python floats used to weight the loss
       contribution of each model output.
     metrics: (Optional) a list of `tf.keras.metrics.Metric` objects.
@@ -159,8 +162,12 @@ def from_keras_model(
                      'exactly two top-level elements, as it must specify type '
                      'information for both inputs to and predictions from the '
                      'model. You passed input spec {}.'.format(input_spec))
-  for input_spec_member in tf.nest.flatten(input_spec):
-    py_typecheck.check_type(input_spec_member, tf.TensorSpec)
+  if not isinstance(input_spec, computation_types.Type):
+    for input_spec_member in tf.nest.flatten(input_spec):
+      py_typecheck.check_type(input_spec_member, tf.TensorSpec)
+  else:
+    for type_elem in input_spec:
+      py_typecheck.check_type(type_elem, computation_types.TensorType)
 
   if metrics is None:
     metrics = []
@@ -199,7 +206,7 @@ def federated_aggregate_keras_metric(
   member_types = tf.nest.map_structure(lambda t: t.type_signature.member,
                                        federated_values)
 
-  @tff.tf_computation
+  @computations.tf_computation
   def zeros_fn():
     # `member_type` is a (potentially nested) `tff.StructType`, which is an
     # `structure.Struct`.
@@ -208,15 +215,15 @@ def federated_aggregate_keras_metric(
 
   zeros = zeros_fn()
 
-  @tff.tf_computation(member_types, member_types)
+  @computations.tf_computation(member_types, member_types)
   def accumulate(accumulators, variables):
     return tf.nest.map_structure(tf.add, accumulators, variables)
 
-  @tff.tf_computation(member_types, member_types)
+  @computations.tf_computation(member_types, member_types)
   def merge(a, b):
     return tf.nest.map_structure(tf.add, a, b)
 
-  @tff.tf_computation(member_types)
+  @computations.tf_computation(member_types)
   def report(accumulators):
     """Insert `accumulators` back into the keras metric to obtain result."""
 
@@ -256,8 +263,8 @@ def federated_aggregate_keras_metric(
           for metric, (name, values) in zip(metrics, accumulators.items())
       ])
 
-  return tff.federated_aggregate(federated_values, zeros, accumulate, merge,
-                                 report)
+  return intrinsics.federated_aggregate(federated_values, zeros, accumulate,
+                                        merge, report)
 
 
 class _KerasModel(model_lib.Model):
@@ -298,13 +305,13 @@ class _KerasModel(model_lib.Model):
 
     metric_variable_type_dict = tf.nest.map_structure(
         tf.TensorSpec.from_tensor, self.report_local_outputs())
-    federated_local_outputs_type = tff.FederatedType(metric_variable_type_dict,
-                                                     tff.CLIENTS)
+    federated_local_outputs_type = computation_types.FederatedType(
+        metric_variable_type_dict, placements.CLIENTS)
 
     def federated_output(local_outputs):
       return federated_aggregate_keras_metric(self.get_metrics(), local_outputs)
 
-    self._federated_output_computation = tff.federated_computation(
+    self._federated_output_computation = computations.federated_computation(
         federated_output, federated_local_outputs_type)
 
   @property

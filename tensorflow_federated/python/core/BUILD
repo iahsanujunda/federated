@@ -1,5 +1,9 @@
+# Direct and indirect packages that have visibility into the `core` package.
 package_group(
     name = "core_visibility",
+    includes = [
+        "//tensorflow_federated/python/simulation:simulation_visibility",
+    ],
     packages = [
         # TFF Dependencies
         "//tensorflow_federated/python/learning/...",
@@ -18,11 +22,6 @@ py_library(
     visibility = [
         "//tensorflow_federated:__pkg__",
         "//tensorflow_federated/tools:__subpackages__",
-
-        # TODO(b/143772942): This visibility is temporary and can be removed
-        # once the `learning` and `simulation` packages depend on targets
-        # explicitly.
-        "//tensorflow_federated:__subpackages__",
     ],
     deps = [
         "//tensorflow_federated/python/core/api:computation_base",
