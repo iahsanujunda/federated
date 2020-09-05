@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Interfaces for extensions, selectively lifted out of `impl`."""
+"""Libraries for extending the TensorFlow Federated core library."""
 
 from tensorflow_federated.python.core.impl.computation_serialization import deserialize_computation
 from tensorflow_federated.python.core.impl.computation_serialization import serialize_computation
@@ -30,6 +30,7 @@ from tensorflow_federated.python.core.impl.executors.executor_factory import Siz
 from tensorflow_federated.python.core.impl.executors.executor_service import ExecutorService
 from tensorflow_federated.python.core.impl.executors.executor_stacks import local_executor_factory
 from tensorflow_federated.python.core.impl.executors.executor_stacks import sizing_executor_factory
+from tensorflow_federated.python.core.impl.executors.executor_stacks import thread_debugging_executor_factory
 from tensorflow_federated.python.core.impl.executors.executor_stacks import worker_pool_executor_factory
 from tensorflow_federated.python.core.impl.executors.executor_value_base import ExecutorValue
 from tensorflow_federated.python.core.impl.executors.federated_composing_strategy import FederatedComposingStrategy

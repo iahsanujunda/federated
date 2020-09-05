@@ -21,14 +21,19 @@ from tensorflow_federated.python.core.api import placements
 from tensorflow_federated.python.core.backends.mapreduce import canonical_form_utils
 from tensorflow_federated.python.core.backends.mapreduce import test_utils as mapreduce_test_utils
 from tensorflow_federated.python.core.backends.mapreduce import transformations
-from tensorflow_federated.python.core.backends.native import execution_contexts
 from tensorflow_federated.python.core.impl.compiler import building_block_factory
 from tensorflow_federated.python.core.impl.compiler import building_blocks
 from tensorflow_federated.python.core.impl.compiler import intrinsic_defs
 from tensorflow_federated.python.core.impl.compiler import test_utils as compiler_test_utils
 from tensorflow_federated.python.core.impl.compiler import transformation_utils
 from tensorflow_federated.python.core.impl.compiler import tree_analysis
+from tensorflow_federated.python.core.impl.context_stack import set_default_context
+from tensorflow_federated.python.core.impl.executors import execution_context
+from tensorflow_federated.python.core.impl.executors import executor_stacks
 from tensorflow_federated.python.core.impl.wrappers import computation_wrapper_instances
+
+
+DEFAULT_GRAPPLER_CONFIG = tf.compat.v1.ConfigProto()
 
 
 class CheckExtractionResultTest(absltest.TestCase):
@@ -116,13 +121,15 @@ class ConsolidateAndExtractTest(absltest.TestCase):
 
   def test_raises_on_none(self):
     with self.assertRaises(TypeError):
-      transformations.consolidate_and_extract_local_processing(None)
+      transformations.consolidate_and_extract_local_processing(
+          None, DEFAULT_GRAPPLER_CONFIG)
 
   def test_raises_reference_to_functional_type(self):
     function_type = computation_types.FunctionType(tf.int32, tf.int32)
     ref = building_blocks.Reference('x', function_type)
     with self.assertRaisesRegex(ValueError, 'of functional type passed'):
-      transformations.consolidate_and_extract_local_processing(ref)
+      transformations.consolidate_and_extract_local_processing(
+          ref, DEFAULT_GRAPPLER_CONFIG)
 
   def test_already_reduced_case(self):
     init = canonical_form_utils.get_iterative_process_for_canonical_form(
@@ -130,7 +137,8 @@ class ConsolidateAndExtractTest(absltest.TestCase):
 
     comp = mapreduce_test_utils.computation_to_building_block(init)
 
-    result = transformations.consolidate_and_extract_local_processing(comp)
+    result = transformations.consolidate_and_extract_local_processing(
+        comp, DEFAULT_GRAPPLER_CONFIG)
 
     self.assertIsInstance(result, building_blocks.CompiledComputation)
     self.assertIsInstance(result.proto, computation_pb2.Computation)
@@ -139,14 +147,16 @@ class ConsolidateAndExtractTest(absltest.TestCase):
   def test_reduces_unplaced_lambda_leaving_type_signature_alone(self):
     lam = building_blocks.Lambda('x', tf.int32,
                                  building_blocks.Reference('x', tf.int32))
-    extracted_tf = transformations.consolidate_and_extract_local_processing(lam)
+    extracted_tf = transformations.consolidate_and_extract_local_processing(
+        lam, DEFAULT_GRAPPLER_CONFIG)
     self.assertIsInstance(extracted_tf, building_blocks.CompiledComputation)
     self.assertEqual(extracted_tf.type_signature, lam.type_signature)
 
   def test_reduces_unplaced_lambda_to_equivalent_tf(self):
     lam = building_blocks.Lambda('x', tf.int32,
                                  building_blocks.Reference('x', tf.int32))
-    extracted_tf = transformations.consolidate_and_extract_local_processing(lam)
+    extracted_tf = transformations.consolidate_and_extract_local_processing(
+        lam, DEFAULT_GRAPPLER_CONFIG)
     executable_tf = computation_wrapper_instances.building_block_to_computation(
         extracted_tf)
     executable_lam = computation_wrapper_instances.building_block_to_computation(
@@ -158,7 +168,8 @@ class ConsolidateAndExtractTest(absltest.TestCase):
     fed_int_type = computation_types.FederatedType(tf.int32, placements.CLIENTS)
     lam = building_blocks.Lambda('x', fed_int_type,
                                  building_blocks.Reference('x', fed_int_type))
-    extracted_tf = transformations.consolidate_and_extract_local_processing(lam)
+    extracted_tf = transformations.consolidate_and_extract_local_processing(
+        lam, DEFAULT_GRAPPLER_CONFIG)
     self.assertIsInstance(extracted_tf, building_blocks.CompiledComputation)
     unplaced_function_type = computation_types.FunctionType(
         fed_int_type.member, fed_int_type.member)
@@ -171,7 +182,7 @@ class ConsolidateAndExtractTest(absltest.TestCase):
         'arg', computation_types.FederatedType(tf.int32, placements.CLIENTS))
     mapped_fn = building_block_factory.create_federated_map_or_apply(lam, arg)
     extracted_tf = transformations.consolidate_and_extract_local_processing(
-        mapped_fn)
+        mapped_fn, DEFAULT_GRAPPLER_CONFIG)
     self.assertIsInstance(extracted_tf, building_blocks.CompiledComputation)
     executable_tf = computation_wrapper_instances.building_block_to_computation(
         extracted_tf)
@@ -187,7 +198,7 @@ class ConsolidateAndExtractTest(absltest.TestCase):
         'arg', computation_types.FederatedType(tf.int32, placements.CLIENTS))
     mapped_fn = building_block_factory.create_federated_map_or_apply(lam, arg)
     extracted_tf = transformations.consolidate_and_extract_local_processing(
-        mapped_fn)
+        mapped_fn, DEFAULT_GRAPPLER_CONFIG)
     self.assertIsInstance(extracted_tf, building_blocks.CompiledComputation)
     executable_tf = computation_wrapper_instances.building_block_to_computation(
         extracted_tf)
@@ -202,7 +213,7 @@ class ConsolidateAndExtractTest(absltest.TestCase):
     federated_value = building_block_factory.create_federated_value(
         zero, placements.SERVER)
     extracted_tf = transformations.consolidate_and_extract_local_processing(
-        federated_value)
+        federated_value, DEFAULT_GRAPPLER_CONFIG)
     executable_tf = computation_wrapper_instances.building_block_to_computation(
         extracted_tf)
     self.assertEqual(executable_tf(), 0)
@@ -214,7 +225,7 @@ class ConsolidateAndExtractTest(absltest.TestCase):
     federated_value = building_block_factory.create_federated_value(
         zero, placements.CLIENTS)
     extracted_tf = transformations.consolidate_and_extract_local_processing(
-        federated_value)
+        federated_value, DEFAULT_GRAPPLER_CONFIG)
     executable_tf = computation_wrapper_instances.building_block_to_computation(
         extracted_tf)
     self.assertEqual(executable_tf(), 0)
@@ -222,7 +233,8 @@ class ConsolidateAndExtractTest(absltest.TestCase):
   def test_reduces_lambda_returning_empty_tuple_to_tf(self):
     empty_tuple = building_blocks.Struct([])
     lam = building_blocks.Lambda('x', tf.int32, empty_tuple)
-    extracted_tf = transformations.consolidate_and_extract_local_processing(lam)
+    extracted_tf = transformations.consolidate_and_extract_local_processing(
+        lam, DEFAULT_GRAPPLER_CONFIG)
     self.assertIsInstance(extracted_tf, building_blocks.CompiledComputation)
 
 
@@ -576,6 +588,53 @@ class ForceAlignAndSplitByIntrinsicTest(absltest.TestCase):
       transformations.force_align_and_split_by_intrinsics(comp, uri)
 
 
+class BindSingleSelectionAsArgumentToLowerLevelLambdaTest(absltest.TestCase):
+
+  def test_binds_single_argument_to_lower_lambda(self):
+    fed_at_clients = computation_types.FederatedType(tf.int32,
+                                                     placements.CLIENTS)
+    fed_at_server = computation_types.FederatedType(tf.int32, placements.SERVER)
+    tuple_of_federated_types = computation_types.StructType(
+        [fed_at_clients, fed_at_server])
+    lam = building_blocks.Lambda(
+        'x', tuple_of_federated_types,
+        building_blocks.Selection(
+            building_blocks.Reference('x', tuple_of_federated_types), index=0))
+    zeroth_index_extracted = transformations.bind_single_selection_as_argument_to_lower_level_lambda(
+        lam, 0)
+    self.assertEqual(zeroth_index_extracted.type_signature, lam.type_signature)
+    self.assertIsInstance(zeroth_index_extracted, building_blocks.Lambda)
+    self.assertIsInstance(zeroth_index_extracted.result, building_blocks.Call)
+    self.assertIsInstance(zeroth_index_extracted.result.function,
+                          building_blocks.Lambda)
+    self.assertRegex(
+        str(zeroth_index_extracted.result.function), r'\((.{4})1 -> (\1)1\)')
+    self.assertEqual(str(zeroth_index_extracted.result.argument), '_var1[0]')
+
+  def test_binds_single_argument_to_lower_lambda_with_selection_by_name(self):
+    fed_at_clients = computation_types.FederatedType(tf.int32,
+                                                     placements.CLIENTS)
+    fed_at_server = computation_types.FederatedType(tf.int32, placements.SERVER)
+    tuple_of_federated_types = computation_types.StructType([
+        (None, fed_at_server),
+        ('a', fed_at_clients),
+    ])
+    lam = building_blocks.Lambda(
+        'x', tuple_of_federated_types,
+        building_blocks.Selection(
+            building_blocks.Reference('x', tuple_of_federated_types), name='a'))
+    zeroth_index_extracted = transformations.bind_single_selection_as_argument_to_lower_level_lambda(
+        lam, 1)
+    self.assertEqual(zeroth_index_extracted.type_signature, lam.type_signature)
+    self.assertIsInstance(zeroth_index_extracted, building_blocks.Lambda)
+    self.assertIsInstance(zeroth_index_extracted.result, building_blocks.Call)
+    self.assertIsInstance(zeroth_index_extracted.result.function,
+                          building_blocks.Lambda)
+    self.assertRegex(
+        str(zeroth_index_extracted.result.function), r'\((.{4})1 -> (\1)1\)')
+    self.assertEqual(str(zeroth_index_extracted.result.argument), '_var1[1]')
+
+
 class ZipSelectionAsArgumentToLowerLevelLambdaTest(absltest.TestCase):
 
   def test_raises_on_none(self):
@@ -641,7 +700,7 @@ class ZipSelectionAsArgumentToLowerLevelLambdaTest(absltest.TestCase):
       transformations.zip_selection_as_argument_to_lower_level_lambda(
           lam, [[0], [1]])
 
-  def test_binds_single_element_tuple_to_lower_lambda(self):
+  def test_zips_single_element_tuple_to_lower_lambda(self):
     fed_at_clients = computation_types.FederatedType(tf.int32,
                                                      placements.CLIENTS)
     fed_at_server = computation_types.FederatedType(tf.int32, placements.SERVER)
@@ -672,26 +731,37 @@ class ZipSelectionAsArgumentToLowerLevelLambdaTest(absltest.TestCase):
         zeroth_index_extracted.result.argument.compact_representation(),
         [expected_arg_regex])
 
-  def test_binds_single_argument_to_lower_lambda(self):
+  def test_zips_single_element_tuple_to_lower_lambda_selection_by_name(self):
     fed_at_clients = computation_types.FederatedType(tf.int32,
                                                      placements.CLIENTS)
     fed_at_server = computation_types.FederatedType(tf.int32, placements.SERVER)
-    tuple_of_federated_types = computation_types.StructType(
-        [fed_at_clients, fed_at_server])
+    tuple_of_federated_types = computation_types.StructType([
+        ('a', fed_at_clients), ('b', fed_at_server)
+    ])
     lam = building_blocks.Lambda(
         'x', tuple_of_federated_types,
         building_blocks.Selection(
-            building_blocks.Reference('x', tuple_of_federated_types), index=0))
-    zeroth_index_extracted = transformations.bind_single_selection_as_argument_to_lower_level_lambda(
-        lam, 0)
+            building_blocks.Reference('x', tuple_of_federated_types), name='a'))
+    expected_fn_regex = (r'\(_([a-z]{3})2 -> federated_map\(<\(_(\1)3 -> '
+                         r'_(\1)3\[0\]\),_(\1)2>\)\)')
+    expected_arg_regex = (r'federated_map\(<\(_([a-z]{3})4 -> '
+                          r'<_(\1)4>\),<_(\1)1\[0\]>\[0\]>\)')
+
+    zeroth_index_extracted = (
+        transformations.zip_selection_as_argument_to_lower_level_lambda(
+            lam, [[0]]))
+
     self.assertEqual(zeroth_index_extracted.type_signature, lam.type_signature)
     self.assertIsInstance(zeroth_index_extracted, building_blocks.Lambda)
     self.assertIsInstance(zeroth_index_extracted.result, building_blocks.Call)
     self.assertIsInstance(zeroth_index_extracted.result.function,
                           building_blocks.Lambda)
-    self.assertRegex(
-        str(zeroth_index_extracted.result.function), r'\((.{4})1 -> (\1)1\)')
-    self.assertEqual(str(zeroth_index_extracted.result.argument), '_var1[0]')
+    self.assertRegexMatch(
+        zeroth_index_extracted.result.function.compact_representation(),
+        [expected_fn_regex])
+    self.assertRegexMatch(
+        zeroth_index_extracted.result.argument.compact_representation(),
+        [expected_arg_regex])
 
   def test_binding_single_arg_leaves_no_unbound_references(self):
     fed_at_clients = computation_types.FederatedType(tf.int32,
@@ -761,6 +831,48 @@ class ZipSelectionAsArgumentToLowerLevelLambdaTest(absltest.TestCase):
         building_blocks.Selection(
             building_blocks.Reference('x', tuple_of_federated_types), index=2),
         index=0)
+    lam = building_blocks.Lambda(
+        'x', tuple_of_federated_types,
+        building_blocks.Struct([first_selection, second_selection]))
+    expected_fn_regex = (r'\(_([a-z]{3})2 -> <federated_map\(<\(_(\1)3 -> '
+                         r'_(\1)3\[0\]\),_(\1)2>\),federated_map\(<\(_(\1)4 -> '
+                         r'_(\1)4\[1\]\),_(\1)2>\)>\)')
+    expected_arg_regex = r'federated_zip_at_clients\(<_([a-z]{3})1\[0\]\[0\],_(\1)1\[2\]\[0\]>\)'
+
+    deep_zeroth_index_extracted = transformations.zip_selection_as_argument_to_lower_level_lambda(
+        lam, [[0, 0], [2, 0]])
+
+    self.assertEqual(deep_zeroth_index_extracted.type_signature,
+                     lam.type_signature)
+    self.assertIsInstance(deep_zeroth_index_extracted, building_blocks.Lambda)
+    self.assertIsInstance(deep_zeroth_index_extracted.result,
+                          building_blocks.Call)
+    self.assertIsInstance(deep_zeroth_index_extracted.result.function,
+                          building_blocks.Lambda)
+    self.assertRegexMatch(
+        deep_zeroth_index_extracted.result.function.compact_representation(),
+        [expected_fn_regex])
+    self.assertRegexMatch(
+        deep_zeroth_index_extracted.result.argument.compact_representation(),
+        [expected_arg_regex])
+
+  def test_binds_multiple_args_deep_in_type_tree_to_lower_lambda_selected_by_name(
+      self):
+    fed_at_clients = computation_types.FederatedType(tf.int32,
+                                                     placements.CLIENTS)
+    fed_at_server = computation_types.FederatedType(tf.int32, placements.SERVER)
+    tuple_of_federated_types = computation_types.StructType([
+        ('a', [('a', fed_at_clients)]), ('b', fed_at_server),
+        ('c', [('c', fed_at_clients)])
+    ])
+    first_selection = building_blocks.Selection(
+        building_blocks.Selection(
+            building_blocks.Reference('x', tuple_of_federated_types), name='a'),
+        name='a')
+    second_selection = building_blocks.Selection(
+        building_blocks.Selection(
+            building_blocks.Reference('x', tuple_of_federated_types), name='c'),
+        name='c')
     lam = building_blocks.Lambda(
         'x', tuple_of_federated_types,
         building_blocks.Struct([first_selection, second_selection]))
@@ -1049,5 +1161,7 @@ class NormalizedBitTest(absltest.TestCase):
 
 
 if __name__ == '__main__':
-  execution_contexts.set_local_execution_context()
+  factory = executor_stacks.local_executor_factory()
+  context = execution_context.ExecutionContext(executor_fn=factory)
+  set_default_context.set_default_context(context)
   absltest.main()

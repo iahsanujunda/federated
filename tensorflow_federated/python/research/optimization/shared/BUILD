@@ -8,7 +8,6 @@ py_library(
     srcs_version = "PY3",
     deps = [
         "//tensorflow_federated",
-        "//tensorflow_federated/python/research/utils:adapters",
         "//tensorflow_federated/python/tensorflow_libs:tensor_utils",
     ],
 )
@@ -86,7 +85,10 @@ py_library(
     name = "optimizer_utils",
     srcs = ["optimizer_utils.py"],
     srcs_version = "PY3",
-    deps = [":yogi"],
+    deps = [
+        "//tensorflow_federated/python/research/optimization/shared/keras_optimizers:lars",
+        "//tensorflow_federated/python/research/optimization/shared/keras_optimizers:yogi",
+    ],
 )
 
 py_test(
@@ -114,19 +116,4 @@ py_test(
         ":schedule_utils",
         "//tensorflow_federated",
     ],
-)
-
-py_library(
-    name = "yogi",
-    srcs = ["yogi.py"],
-    srcs_version = "PY3",
-)
-
-py_test(
-    name = "yogi_test",
-    size = "medium",
-    srcs = ["yogi_test.py"],
-    python_version = "PY3",
-    srcs_version = "PY3",
-    deps = [":yogi"],
 )

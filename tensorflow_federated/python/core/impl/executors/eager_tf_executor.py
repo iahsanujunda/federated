@@ -13,7 +13,8 @@
 # limitations under the License.
 """A simple executor that operates synchronously in eager TensorFlow mode."""
 
-from typing import Any, MutableMapping, Optional
+import itertools
+from typing import Any, Iterable, MutableMapping, Optional
 
 import cachetools
 import tensorflow as tf
@@ -28,6 +29,7 @@ from tensorflow_federated.python.core.api import computation_types
 from tensorflow_federated.python.core.api import typed_object
 from tensorflow_federated.python.core.impl import computation_impl
 from tensorflow_federated.python.core.impl import type_utils
+from tensorflow_federated.python.core.impl.compiler import building_blocks
 from tensorflow_federated.python.core.impl.executors import executor_base
 from tensorflow_federated.python.core.impl.executors import executor_value_base
 from tensorflow_federated.python.core.impl.types import type_analysis
@@ -38,6 +40,34 @@ from tensorflow_federated.python.tensorflow_libs import graph_merge
 
 # Cache size here is simply heuristic, no formal analysis.
 _TF_FUNCTION_CACHE_SIZE = 100
+
+
+def _all_graph_def_nodes(
+    graph_def: tf.compat.v1.GraphDef) -> Iterable[tf.compat.v1.NodeDef]:
+  return itertools.chain(graph_def.node,
+                         *[f.node_def for f in graph_def.library.function])
+
+
+def _check_dataset_reduce_in_multi_gpu(
+    graph_def: tf.compat.v1.GraphDef) -> None:
+  """Detect if ReduceDataset Op is used in a multi-GPU simulation."""
+  gpu_devices = tf.config.list_logical_devices('GPU')
+  if len(gpu_devices) <= 1:
+    return
+  has_dataset_reduce_node = False
+  for node in _all_graph_def_nodes(graph_def):
+    # If `tf.device` is explicitly used in the graph_def, the graph_def was
+    # defined by advanced users who we trust know what they are doing.
+    if node.device:
+      return
+    if node.op == 'ReduceDataset':
+      has_dataset_reduce_node = True
+  if has_dataset_reduce_node:
+    raise ValueError(
+        'Detected dataset reduce op in multi-GPU TFF simulation: '
+        '`use_experimental_simulation_loop=True` for `tff.learning`; or '
+        'use `for ... in iter(dataset)` for your own dataset iteration.'
+        'Reduce op will be functinoal after b/159180073.')
 
 
 def _get_wrapped_function_from_comp(comp, must_pin_function_to_cpu, param_type,
@@ -67,6 +97,9 @@ def _get_wrapped_function_from_comp(comp, must_pin_function_to_cpu, param_type,
       Result of importing graphdef backing `comp`.
     """
     graph_def = serialization_utils.unpack_graph_def(comp.tensorflow.graph_def)
+    # TODO(b/159180073): clean raise after fixing dataset reduce.
+    _check_dataset_reduce_in_multi_gpu(graph_def)
+
     init_op = comp.tensorflow.initialize_op
     if init_op:
       graph_def = tensorflow_utils.add_control_deps_for_init_op(
@@ -150,8 +183,10 @@ def embed_tensorflow_computation(comp, type_spec=None, device=None):
                                                     lambda t: t.is_sequence())
   which_computation = comp.WhichOneof('computation')
   if which_computation != 'tensorflow':
+    unexpected_building_block = building_blocks.ComputationBuildingBlock.from_proto(
+        comp)
     raise TypeError('Expected a TensorFlow computation, found {}.'.format(
-        which_computation))
+        unexpected_building_block))
 
   if type_spec.is_function():
     param_type = type_spec.parameter
@@ -162,7 +197,6 @@ def embed_tensorflow_computation(comp, type_spec=None, device=None):
 
   wrapped_fn = _get_wrapped_function_from_comp(comp, must_pin_function_to_cpu,
                                                param_type, device)
-
   param_fns = []
   if param_type is not None:
     for spec in structure.flatten(type_spec.parameter):
@@ -186,6 +220,21 @@ def embed_tensorflow_computation(comp, type_spec=None, device=None):
       result_fns.append(fn)
 
   def _fn_to_return(arg, param_fns, wrapped_fn):  # pylint:disable=missing-docstring
+
+    # TODO(b/166479382): This cleanup-before-invocation pattern is a workaround
+    # to square the circle of TF data expecting to lazily reference this
+    # resource on iteration, as well as usages that expect to reinitialize a
+    # table with new data. Revisit the semantics implied by this cleanup
+    # pattern.
+    eager_cleanup_resources = []
+    for op in wrapped_fn.graph.get_operations():
+      if op.type == 'HashTableV2':
+        eager_cleanup_resources += op.outputs
+    if eager_cleanup_resources:
+      for resource in wrapped_fn.prune(
+          feeds={}, fetches=eager_cleanup_resources)():
+        tf.raw_ops.DestroyResourceOp(resource=resource)
+
     param_elements = []
     if arg is not None:
       arg_parts = structure.flatten(arg)

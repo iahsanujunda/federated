@@ -4,11 +4,6 @@ package_group(
     packages = [
         # Subpackages
         "//tensorflow_federated/python/core/backends/native/...",
-
-        # TODO(b/143772942): Temporary to allow use of
-        # `set_local_execution_context` in core/impl integration tests. Remove
-        # once these tests have been moved.
-        "//tensorflow_federated/python/core/...",
     ],
 )
 
@@ -49,5 +44,18 @@ py_library(
         "//tensorflow_federated/python/core/impl/context_stack:context_stack_impl",
         "//tensorflow_federated/python/core/impl/executors:execution_context",
         "//tensorflow_federated/python/core/impl/executors:executor_stacks",
+        "//tensorflow_federated/python/core/impl/executors:remote_executor",
+    ],
+)
+
+py_test(
+    name = "execution_contexts_test",
+    srcs = ["execution_contexts_test.py"],
+    python_version = "PY3",
+    srcs_version = "PY3",
+    deps = [
+        ":execution_contexts",
+        "//tensorflow_federated/python/common_libs:test",
+        "//tensorflow_federated/python/core/api:computations",
     ],
 )

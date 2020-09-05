@@ -17,7 +17,6 @@ py_library(
     srcs_version = "PY3",
     visibility = [
         "//tensorflow_federated:__pkg__",
-        "//tensorflow_federated/python/core:__pkg__",
     ],
     deps = [
         ":adaptive_zeroing",
@@ -121,6 +120,7 @@ py_test(
         "//tensorflow_federated/python/core/backends/native:execution_contexts",
         "//tensorflow_federated/python/core/impl/types:placement_literals",
         "//tensorflow_federated/python/core/impl/types:type_conversions",
+        "//tensorflow_federated/python/core/templates:measured_process",
     ],
 )
 
@@ -176,9 +176,8 @@ py_library(
 
 py_test(
     name = "federated_aggregations_test",
-    size = "small",
+    timeout = "moderate",
     srcs = ["federated_aggregations_test.py"],
-    flaky = 1,  # TODO(b/162455851): Fix flakiness.
     python_version = "PY3",
     srcs_version = "PY3",
     tags = [
@@ -186,11 +185,14 @@ py_test(
     ],
     deps = [
         ":federated_aggregations",
+        "//tensorflow_federated/python/common_libs:structure",
         "//tensorflow_federated/python/common_libs:test",
         "//tensorflow_federated/python/core/api:computation_types",
         "//tensorflow_federated/python/core/api:computations",
+        "//tensorflow_federated/python/core/api:intrinsics",
         "//tensorflow_federated/python/core/api:placements",
         "//tensorflow_federated/python/core/backends/native:execution_contexts",
+        "//tensorflow_federated/python/core/test:static_assert",
     ],
 )
 

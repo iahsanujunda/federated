@@ -3,12 +3,6 @@ package(default_visibility = ["//tensorflow_federated/python/research"])
 licenses(["notice"])
 
 py_library(
-    name = "adapters",
-    srcs = ["adapters.py"],
-    srcs_version = "PY3",
-)
-
-py_library(
     name = "aggregate_fns",
     srcs = ["aggregate_fns.py"],
     srcs_version = "PY3",
@@ -24,6 +18,24 @@ py_test(
         ":aggregate_fns",
         "//tensorflow_federated",
     ],
+)
+
+py_library(
+    name = "centralized_training_loop",
+    srcs = ["centralized_training_loop.py"],
+    srcs_version = "PY3",
+    deps = [
+        "//tensorflow_federated/python/research/optimization/shared:keras_callbacks",
+        "//tensorflow_federated/python/research/utils:utils_impl",
+    ],
+)
+
+py_test(
+    name = "centralized_training_loop_test",
+    srcs = ["centralized_training_loop_test.py"],
+    python_version = "PY3",
+    srcs_version = "PY3",
+    deps = [":centralized_training_loop"],
 )
 
 py_library(
@@ -78,10 +90,10 @@ py_library(
     srcs = ["training_loop.py"],
     srcs_version = "PY3",
     deps = [
-        ":adapters",
         ":checkpoint_manager",
         ":metrics_manager",
         ":utils_impl",
+        "//tensorflow_federated",
     ],
 )
 
@@ -92,7 +104,6 @@ py_test(
     python_version = "PY3",
     srcs_version = "PY3",
     deps = [
-        ":adapters",
         ":checkpoint_manager",
         ":metrics_manager",
         ":training_loop",

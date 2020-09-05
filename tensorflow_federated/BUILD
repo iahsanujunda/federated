@@ -11,6 +11,7 @@ py_library(
     visibility = ["//visibility:public"],
     deps = [
         ":version",
+        "//tensorflow_federated/python/aggregators",
         "//tensorflow_federated/python/core/api:computation_base",
         "//tensorflow_federated/python/core/api:computation_types",
         "//tensorflow_federated/python/core/api:computations",
@@ -26,8 +27,6 @@ py_library(
         "//tensorflow_federated/python/core/utils",
         "//tensorflow_federated/python/learning",
         "//tensorflow_federated/python/simulation",
-        # Required to initialize a default execution context.
-        "//tensorflow_federated/python/core",  # build_cleaner: keep;
     ],
 )
 

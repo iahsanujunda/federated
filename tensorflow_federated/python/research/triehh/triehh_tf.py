@@ -51,12 +51,15 @@ class ServerState(object):
   Fields:
   `discovered_heavy_hitters`: A tf.string containing discovered heavy
   hitters.
+  `heavy_hitters_counts`: A tf.int32 containing the counts of the
+  heavy hitter in the round it is discovered.
   `discovered_prefixes`: A tf.tstring containing candidate prefixes.
   `round_num`: A tf.constant dictating the algorithm's round number.
   `accumulated_votes`: A tf.constant that holds the votes accumulated over
   sub-rounds.
   """
   discovered_heavy_hitters = attr.ib()
+  heavy_hitters_counts = attr.ib()
   discovered_prefixes = attr.ib()
   round_num = attr.ib()
   accumulated_votes = attr.ib()
@@ -64,7 +67,8 @@ class ServerState(object):
 
 def make_accumulate_client_votes_fn(round_num, num_sub_rounds,
                                     discovered_prefixes_table,
-                                    possible_prefix_extensions_table):
+                                    possible_prefix_extensions_table,
+                                    default_terminator):
   """Returns a reduce function that is used to accumulate client votes.
 
   This function creates an accumulate_client_votes reduce function that can be
@@ -80,6 +84,7 @@ def make_accumulate_client_votes_fn(round_num, num_sub_rounds,
       discovered prefixes.
     possible_prefix_extensions_table: A tf.lookup.StaticHashTable containing the
       possible prefix extensions that a client can vote on.
+    default_terminator: A tf.string containing the end of sequence symbol.
 
   Returns:
     An accumulate_client_votes reduce function for a specific round, set of
@@ -92,7 +97,6 @@ def make_accumulate_client_votes_fn(round_num, num_sub_rounds,
 
     example = tf.strings.lower(example)
     # Append the default terminator to the example.
-    default_terminator = tf.constant(DEFAULT_TERMINATOR, dtype=tf.string)
     example = tf.strings.join([example, default_terminator])
 
     # Compute effective round number.
@@ -127,7 +131,7 @@ def make_accumulate_client_votes_fn(round_num, num_sub_rounds,
 @tf.function
 def client_update(dataset, discovered_prefixes, possible_prefix_extensions,
                   round_num, num_sub_rounds, max_num_prefixes,
-                  max_user_contribution):
+                  max_user_contribution, default_terminator):
   """Creates a ClientOutput object that holds the client's votes.
 
   This function takes in a 'tf.data.Dataset' containing the client's words,
@@ -150,6 +154,7 @@ def client_update(dataset, discovered_prefixes, possible_prefix_extensions,
       can keep in the trie.
     max_user_contribution: A tf.constant dictating the maximum number of
       examples a client can contribute.
+    default_terminator: A tf.string containing the end of sequence symbol.
 
   Returns:
     A ClientOutput object holding the client's votes.
@@ -176,11 +181,11 @@ def client_update(dataset, discovered_prefixes, possible_prefix_extensions,
 
     accumulate_client_votes_fn = make_accumulate_client_votes_fn(
         round_num, num_sub_rounds, discovered_prefixes_table,
-        possible_prefix_extensions_table)
+        possible_prefix_extensions_table, default_terminator)
 
-    sampled_data = tf.data.Dataset.from_tensor_slices(
-        hh_utils.get_top_elements(
-            hh_utils.listify(dataset), max_user_contribution))
+    sampled_data_list = hh_utils.get_top_elements(dataset,
+                                                  max_user_contribution)
+    sampled_data = tf.data.Dataset.from_tensor_slices(sampled_data_list)
 
     return ClientOutput(
         sampled_data.reduce(client_votes, accumulate_client_votes_fn))
@@ -192,7 +197,9 @@ def accumulate_server_votes(server_state, sub_round_votes):
   accumulated_votes = server_state.accumulated_votes + sub_round_votes
   round_num = server_state.round_num + 1
   return tff.utils.update_state(
-      server_state, accumulated_votes=accumulated_votes, round_num=round_num)
+      server_state,
+      accumulated_votes=accumulated_votes,
+      round_num=round_num)
 
 
 @tf.function()
@@ -329,6 +336,9 @@ def accumulate_server_votes_and_decode(server_state, possible_prefix_extensions,
   new_heavy_hitters = tf.boolean_mask(heavy_hitters_candidates,
                                       heavy_hitters_mask)
 
+  new_heavy_hitters_counts = tf.boolean_mask(heavy_hitters_votes,
+                                             heavy_hitters_mask)
+
   # All but the last column of `accumulated_votes` are votes of prefixes.
   prefixes_votes = tf.slice(accumulated_votes, [0, 0], [
       tf.shape(server_state.discovered_prefixes)[0],
@@ -343,6 +353,8 @@ def accumulate_server_votes_and_decode(server_state, possible_prefix_extensions,
 
   discovered_heavy_hitters = tf.concat(
       [server_state.discovered_heavy_hitters, new_heavy_hitters], 0)
+  heavy_hitters_counts = tf.concat(
+      [server_state.heavy_hitters_counts, new_heavy_hitters_counts], 0)
 
   # Reinitialize the server's vote tensor.
   accumulated_votes = tf.zeros(
@@ -351,10 +363,11 @@ def accumulate_server_votes_and_decode(server_state, possible_prefix_extensions,
   # Increment the server's round_num.
   round_num = server_state.round_num + 1
 
-  # Return an udpated server state.
+  # Return an updated server state.
   return tff.utils.update_state(
       server_state,
       discovered_heavy_hitters=discovered_heavy_hitters,
+      heavy_hitters_counts=heavy_hitters_counts,
       round_num=round_num,
       discovered_prefixes=extended_prefixes,
       accumulated_votes=accumulated_votes)

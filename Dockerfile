@@ -57,7 +57,7 @@ RUN mkdir /bazel && \
 RUN bazel version
 
 # Install the TensorFlow Federated development environment dependencies
-RUN ${PIP} install --no-cache-dir \
+RUN ${PIP} install --no-cache-dir --upgrade \
     absl-py~=0.9.0 \
     attrs~=19.3.0 \
     cachetools~=3.1.1 \
@@ -70,7 +70,7 @@ RUN ${PIP} install --no-cache-dir \
     retrying~=1.3.3 \
     semantic-version~=2.8.5 \
     tensorflow-model-optimization~=0.4.0 \
-    tensorflow-privacy~=0.4.0 \
+    tensorflow-privacy~=0.5.0 \
     tf-nightly \
     tfa-nightly
 RUN pip freeze

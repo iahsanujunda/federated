@@ -13,26 +13,58 @@
 # limitations under the License.
 """A set of utilities for heavy hitter discovery."""
 
+import bisect
 import collections
 import statistics
 import time
 
 from absl import app
 from absl import logging
+from scipy import stats
 
 import tensorflow as tf
 import tensorflow_federated as tff
 import tensorflow_text as tf_text
 
 
+# These are keys in the shakespeare dataset, so need to be kept in sync.
+SELECTED_CLIENTS = [
+    'THE_FIRST_PART_OF_KING_HENRY_THE_FOURTH_FRANCIS',
+    'PERICLES__PRINCE_OF_TYRE_PRIEST',
+    'THE_TAMING_OF_THE_SHREW_CERES',
+    'PERICLES__PRINCE_OF_TYRE_MARSHAL',
+    'ALL_S_WELL_THAT_ENDS_WELL_LOVE',
+    'THE_TRAGEDY_OF_KING_LEAR_MRS',
+    'THE_TAMING_OF_THE_SHREW_IRIS',
+    'THE_TRAGEDY_OF_KING_LEAR_MARIANA',
+    'PERICLES__PRINCE_OF_TYRE_ROSS',
+    'ALL_S_WELL_THAT_ENDS_WELL_SECOND_CITIZEN',
+]
+
+
+def shakespeare_deterministic_sampler(data):
+  """Returns a deterministic sample.
+
+  Args:
+    data: a tff.simulation.ClientData object.
+
+  Returns:
+    list of tf.data.Datasets.
+  """
+  return [
+      tokenize(data.create_tf_dataset_for_client(client_id), 'shakespeare')
+      for client_id in SELECTED_CLIENTS
+  ]
+
+
 @tf.function
-def get_top_elements(list_of_elements, max_user_contribution):
+def get_top_elements(dataset, max_user_contribution):
   """Gets the top max_user_contribution words from the input list.
 
   Note that the returned set of top words will not necessarily be sorted.
 
   Args:
-    list_of_elements: A tensor containing a list of elements.
+    dataset: A `tf.data.Dataset` to extract top elements from.
     max_user_contribution: The maximum number of elements to keep.
 
   Returns:
@@ -40,7 +72,29 @@ def get_top_elements(list_of_elements, max_user_contribution):
     If the total number of unique words is less than or equal to
     max_user_contribution, returns the set of unique words.
   """
-  words, _, counts = tf.unique_with_counts(list_of_elements)
+  # Create a tuple of parallel elements and counts. This will be appended to and
+  # updated as we iterate over the dataset.
+  element_type = dataset.element_spec.dtype
+  initial_histogram = (tf.constant([], dtype=element_type),
+                       tf.constant([], dtype=tf.int64))
+
+  def count_word(histogram, new_element):
+    elements, counts = histogram
+    mask = tf.equal(elements, new_element)
+    # If the element doesn't match any we've already seen, expand the list of
+    # elements we are tracking and add one for the count.
+    if not tf.reduce_any(mask):
+      elements = tf.concat(
+          [elements, tf.expand_dims(new_element, axis=0)], axis=0)
+      counts = tf.concat([counts, tf.constant([1], dtype=tf.int64)], axis=0)
+    else:
+      # Otherwise add one to the index that was `True`.
+      counts += tf.cast(mask, tf.int64)
+    return elements, counts
+
+  words, counts = dataset.reduce(
+      initial_state=initial_histogram, reduce_func=count_word)
+
   if tf.size(words) > max_user_contribution:
     # This logic is influenced by the focus on global heavy hitters and
     # thus implements clipping by chopping the tail of the distribution
@@ -66,19 +120,6 @@ def get_random_elements(list_of_elements, max_user_contribution):
     A tensor of a list of strings.
   """
   return tf.random.shuffle(list_of_elements)[:max_user_contribution]
-
-
-@tf.function()
-def listify(dataset):
-  """Turns a stream of strings into a 1D tensor of strings."""
-  data = tf.constant([], dtype=tf.string)
-  for item in dataset:
-    # Empty datasets return a zero tf.float32 tensor for some reason.
-    # so we need to protect against that.
-    if item.dtype == tf.string:
-      items = tf.expand_dims(item, 0)
-      data = tf.concat([data, items], axis=0)
-  return data
 
 
 @tf.function
@@ -209,33 +250,43 @@ def f1_score(ground_truth, signal, k):
 
 
 def top_k(signal, k):
-  """Computes the top_k cut of a {'string': frequency} dict."""
-  counter = collections.Counter(signal)
-  ranks = collections.defaultdict(list)
-  for key, value in counter.most_common():
-    ranks[value].append(key)
-  results = {}
-  counter = 0
-  for freq, values in ranks.items():
-    for v in values:
-      results[v] = freq
-      counter += 1
-    if counter >= k:
-      break
-  return results
+  """Computes the top k cut of a {'string': frequency} dict.
+
+  Args:
+    signal: A dictionary of heavy hitters with counts.
+    k: The number of top items to return.
+
+  Returns:
+    A dictionary of size k, containing the heavy hitters with the highest k
+    counts. Note that the keys are sorted alphabetically for items with tied
+    values, so the returned results are always consistent for the same input
+    dictionary.
+  """
+  # The key might be None.
+  if None in signal:
+    del signal[None]
+
+  if len(signal) <= k:
+    return signal
+
+  # Sort the dictionary decreasingly by counts, then increasingly by order in
+  # the alphabet.
+  sorted_signal = sorted(signal.items(), key=lambda x: (-x[1], x[0]))
+  return dict(sorted_signal[:k])
 
 
 def compute_loss(results,
                  expected_results,
                  correction,
-                 space=None,
-                 space_cost_per_error=None,
+                 communication_cost=None,
+                 communication_cost_per_error=None,
                  factor_bandwidth_into_loss=False):
   """Computes the loss between results and expected_results."""
   distance = distance_l1(
       signal=results, ground_truth=expected_results, correction=correction)
   if factor_bandwidth_into_loss:
-    distance = distance + (float(space) / space_cost_per_error)
+    distance = distance + (
+        float(communication_cost) / communication_cost_per_error)
   return distance
 
 
@@ -249,38 +300,101 @@ def enough_variation(new_results, old_results, min_variation):
   return len(intersection) >= min_variation
 
 
-def get_top_words(datasets, num_words_per_dataset=None):
+def get_all_words_counts(datasets):
   total_words = []
   for dataset in datasets:
     words = [word.numpy().decode('utf-8') for word in dataset]
-    if num_words_per_dataset is not None:
-      words = collections.Counter(words).most_common(num_words_per_dataset)
-      words = [word_pair[0] for word_pair in words]
     total_words += list(set(words))
-  return total_words
+  return dict(collections.Counter(total_words))
 
 
 def compute_expected_results(datasets, limit):
-  return top_k(get_top_words(datasets), limit)
+  return top_k(get_all_words_counts(datasets), limit)
 
 
 def calculate_ground_truth(data, dataset_name):
   """Gets all the words in the entire dataset."""
+  start = time.time()
   all_datasets = [
       tokenize(data.create_tf_dataset_for_client(client_id), dataset_name)
       for client_id in data.client_ids
   ]
-
-  start = time.time()
-  ground_truth_results = get_top_words(all_datasets)
+  ground_truth_results = get_all_words_counts(all_datasets)
   logging.info('Obtained ground truth in %.2f seconds', time.time() - start)
   return ground_truth_results
 
 
+def compute_threshold_leakage(ground_truth, signal, t):
+  """Computes the threshold leakage of the least frequent words.
+
+  A word is leaked at threshold `t` if it appears less than `t` times in
+  `ground_truth` but appears in `signal`.
+
+  The false positive rate (FPR) at a threshold `t` is defined as the number of
+  leaked words divided by the number of words appearing less than `t` times in
+  `ground_truth`.
+
+  The false discovery rate (FDR) at a threshold `t` is defined as the number of
+  leaked words divided by the size of `signal`.
+
+  Args:
+    ground_truth: The ground truth dict.
+    signal: The obtained heavy hitters dict.
+    t: Compute FPR, FDR and the harmonic mean of these two with a leak threshold
+      from 1 to t.
+
+  Returns:
+    Three dictionaries: false_positive_rate, false_discovery_rate,
+    harmonic_mean_fpr_fdr leakage at threshold from 1 to t.
+  """
+
+  false_positive_rate = {}
+  false_discovery_rate = {}
+  harmonic_mean_fpr_fdr = {}
+
+  # Order the ground truth dictionary increasingly by counts for binary search.
+  ground_truth = collections.OrderedDict(
+      sorted(ground_truth.items(), key=lambda x: x[1]))
+  ground_truth_words = list(ground_truth.keys())
+  ground_truth_counts = list(ground_truth.values())
+
+  leaked_words_candidates = set(signal.keys())
+  bisect_upper_bound = len(ground_truth_counts)
+  signal_size = len(signal)
+
+  # Iterate the threshold from t to 1. Note that leaked words of threshold t-1
+  # is a subset of leaked words of threshold k.
+  for threshold in range(t, 0, -1):
+    below_threshold_index = bisect.bisect_left(
+        ground_truth_counts, threshold, lo=0, hi=bisect_upper_bound)
+    words_below_threshold = set(ground_truth_words[:below_threshold_index])
+    leaked_words = words_below_threshold.intersection(leaked_words_candidates)
+    leaked_words_count = len(leaked_words)
+
+    # If leaked_words_count > 0, then it must be below_threhold_index > 0 and
+    # signal_size > 0, so there won't be a "divide by 0" error.
+    if leaked_words_count > 0:
+      false_positive_rate[
+          threshold] = leaked_words_count / below_threshold_index
+      false_discovery_rate[threshold] = leaked_words_count / signal_size
+      harmonic_mean_fpr_fdr[threshold] = stats.hmean(
+          [false_positive_rate[threshold], false_discovery_rate[threshold]])
+    else:
+      false_positive_rate[threshold] = 0.0
+      false_discovery_rate[threshold] = 0.0
+      harmonic_mean_fpr_fdr[threshold] = 0.0
+
+    # The leaked_words in the next round must be a subset of this round.
+    leaked_words_candidates = leaked_words
+    bisect_upper_bound = below_threshold_index
+
+  return false_positive_rate, false_discovery_rate, harmonic_mean_fpr_fdr
+
+
 @tff.tf_computation(tff.SequenceType(tf.string))
 def compute_lossless_result_per_user(dataset):
-  words = listify(dataset)
-  k_words = get_top_elements(words, 10)
+  # Do not have limit on each client's contribution in this case.
+  k_words = get_top_elements(dataset, tf.constant(tf.int32.max))
   return k_words
 
 

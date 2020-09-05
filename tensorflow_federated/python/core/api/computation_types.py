@@ -261,7 +261,10 @@ class _Intern(abc.ABCMeta):
 
 
 def _hash_dtype_and_shape(dtype: tf.DType, shape: tf.TensorShape) -> int:
-  return hash((dtype.name, tuple(shape.as_list())))
+  if shape.rank is not None:
+    # as_list is not defined on unknown tensorshapes
+    return hash((dtype.name, tuple(shape.as_list())))
+  return hash((dtype.name, None))
 
 
 class TensorType(Type, metaclass=_Intern):
@@ -341,6 +344,8 @@ class TensorType(Type, metaclass=_Intern):
              tensor_utils.same_shape(self._shape, other.shape)))
 
   def is_assignable_from(self, source_type: 'Type') -> bool:
+    if self is source_type:
+      return True
     if (not isinstance(source_type, TensorType) or
         self.dtype != source_type.dtype):
       return False
@@ -456,6 +461,8 @@ class StructType(structure.Struct, Type, metaclass=_Intern):
                                structure.Struct.__eq__(self, other))
 
   def is_assignable_from(self, source_type: 'Type') -> bool:
+    if self is source_type:
+      return True
     if not isinstance(source_type, StructType):
       return False
     target_elements = structure.to_elements(self)
@@ -552,6 +559,8 @@ class SequenceType(Type, metaclass=_Intern):
                                 self._element == other.element))
 
   def is_assignable_from(self, source_type: 'Type') -> bool:
+    if self is source_type:
+      return True
     return ((isinstance(source_type, SequenceType) and
              self.element.is_assignable_from(source_type.element)))
 
@@ -605,12 +614,15 @@ class FunctionType(Type, metaclass=_Intern):
                                 self._result == other.result))
 
   def is_assignable_from(self, source_type: 'Type') -> bool:
+    if self is source_type:
+      return True
     if not isinstance(source_type, FunctionType):
       return False
     if (self.parameter is None) != (source_type.parameter is None):
       return False
+    # Note that function parameters are contravariant, so we invert the check.
     if (self.parameter is not None and
-        not self.parameter.is_assignable_from(source_type.parameter)):
+        not source_type.parameter.is_assignable_from(self.parameter)):
       return False
     return self.result.is_assignable_from(source_type.result)
 
@@ -690,6 +702,8 @@ class PlacementType(Type, metaclass=_Intern):
     return (self is other) or isinstance(other, PlacementType)
 
   def is_assignable_from(self, source_type: 'Type') -> bool:
+    if self is source_type:
+      return True
     return isinstance(source_type, PlacementType)
 
 
@@ -764,6 +778,8 @@ class FederatedType(Type, metaclass=_Intern):
                                 self._all_equal == other.all_equal))
 
   def is_assignable_from(self, source_type: 'Type') -> bool:
+    if self is source_type:
+      return True
     return (isinstance(source_type, FederatedType) and
             self.member.is_assignable_from(source_type.member) and
             (not self.all_equal or source_type.all_equal) and

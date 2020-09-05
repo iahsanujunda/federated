@@ -12,70 +12,364 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import collections
+
 import tensorflow as tf
 
-from tensorflow_federated.python.common_libs import serialization_utils
 from tensorflow_federated.python.common_libs import test
 from tensorflow_federated.python.core.api import computation_types
-from tensorflow_federated.python.core.backends.native import execution_contexts
 from tensorflow_federated.python.core.impl import computation_impl
 from tensorflow_federated.python.core.impl.compiler import building_blocks
 from tensorflow_federated.python.core.impl.types import placement_literals
 from tensorflow_federated.python.core.impl.wrappers import computation_wrapper_instances
 
 
-class ComputationWrapperInstancesTest(test.TestCase):
+class TensorflowWrapperTest(test.TestCase):
 
-  @test.graph_mode_test
-  def test_tf_wrapper_with_one_op_py_fn(self):
+  def test_invoke_with_typed_lambda(self):
+    foo = lambda x: x > 10
+    foo = computation_wrapper_instances.tensorflow_wrapper(foo, tf.int32)
+    self.assertEqual(foo.type_signature.compact_representation(),
+                     '(int32 -> bool)')
+
+  def test_invoke_with_polymorphic_lambda(self):
+    foo = lambda x: x > 10
+    foo = computation_wrapper_instances.tensorflow_wrapper(foo)
+
+    concrete_fn = foo.fn_for_argument_type(
+        computation_types.TensorType(tf.int32))
+    self.assertEqual(concrete_fn.type_signature.compact_representation(),
+                     '(int32 -> bool)')
+    concrete_fn = foo.fn_for_argument_type(
+        computation_types.TensorType(tf.float32))
+    self.assertEqual(concrete_fn.type_signature.compact_representation(),
+                     '(float32 -> bool)')
+
+  def test_invoke_with_no_arg_lambda(self):
+    foo = lambda: 10
+    foo = computation_wrapper_instances.tensorflow_wrapper(foo)
+    self.assertEqual(foo.type_signature.compact_representation(), '( -> int32)')
+
+  def test_invoke_with_typed_fn(self):
+
+    def foo(x):
+      return x > 10
+
+    foo = computation_wrapper_instances.tensorflow_wrapper(foo, tf.int32)
+    self.assertEqual(foo.type_signature.compact_representation(),
+                     '(int32 -> bool)')
+
+  def test_invoke_with_polymorphic_fn(self):
+
+    def foo(x):
+      return x > 10
+
+    foo = computation_wrapper_instances.tensorflow_wrapper(foo)
+
+    concrete_fn = foo.fn_for_argument_type(
+        computation_types.TensorType(tf.int32))
+    self.assertEqual(concrete_fn.type_signature.compact_representation(),
+                     '(int32 -> bool)')
+    concrete_fn = foo.fn_for_argument_type(
+        computation_types.TensorType(tf.float32))
+    self.assertEqual(concrete_fn.type_signature.compact_representation(),
+                     '(float32 -> bool)')
+
+  def test_invoke_with_no_arg_fn(self):
+
+    def foo():
+      return 10
+
+    foo = computation_wrapper_instances.tensorflow_wrapper(foo)
+    self.assertEqual(foo.type_signature.compact_representation(), '( -> int32)')
+
+  def test_decorate_as_typed_fn(self):
 
     @computation_wrapper_instances.tensorflow_wrapper(tf.int32)
     def foo(x):
       return x > 10
 
-    self.assertEqual(str(foo.type_signature), '(int32 -> bool)')
+    self.assertEqual(foo.type_signature.compact_representation(),
+                     '(int32 -> bool)')
 
-    # TODO(b/113112885): Remove this protected member access once the part of
-    # the infrastructure that deals with invoking functions is present. At this
-    # point, extracting the proto from within 'foo' is the only way to test the
-    # wrapper works as intended.
-    comp = foo._computation_proto  # pylint: disable=protected-access
+  def test_decorate_as_polymorphic_fn(self):
 
-    self.assertEqual(comp.WhichOneof('computation'), 'tensorflow')
-    x = tf.compat.v1.placeholder(tf.int32)
-    result = tf.import_graph_def(
-        serialization_utils.unpack_graph_def(comp.tensorflow.graph_def),
-        {comp.tensorflow.parameter.tensor.tensor_name: x},
-        [comp.tensorflow.result.tensor.tensor_name])
-    self.assertEqual(
-        list(tf.compat.v1.Session().run(result, feed_dict={x: n})
-             for n in [1, 20, 5, 10, 30]),
-        [[False], [True], [False], [False], [True]])
+    @computation_wrapper_instances.tensorflow_wrapper
+    def foo(x):
+      return x > 10
 
-  @test.graph_mode_test
-  def test_tf_wrapper_with_tf_add(self):
+    concrete_fn = foo.fn_for_argument_type(
+        computation_types.TensorType(tf.int32))
+    self.assertEqual(concrete_fn.type_signature.compact_representation(),
+                     '(int32 -> bool)')
+    concrete_fn = foo.fn_for_argument_type(
+        computation_types.TensorType(tf.float32))
+    self.assertEqual(concrete_fn.type_signature.compact_representation(),
+                     '(float32 -> bool)')
+
+  def test_decorate_as_no_arg_fn(self):
+
+    @computation_wrapper_instances.tensorflow_wrapper
+    def foo():
+      return 10
+
+    self.assertEqual(foo.type_signature.compact_representation(), '( -> int32)')
+
+  def test_invoke_with_typed_tf_function(self):
+
+    @tf.function
+    def foo(x):
+      return x > 10
+
+    foo = computation_wrapper_instances.tensorflow_wrapper(foo, tf.int32)
+    self.assertEqual(foo.type_signature.compact_representation(),
+                     '(int32 -> bool)')
+
+  def test_invoke_with_polymorphic_tf_function(self):
+
+    @tf.function
+    def foo(x):
+      return x > 10
+
+    foo = computation_wrapper_instances.tensorflow_wrapper(foo)
+
+    concrete_fn = foo.fn_for_argument_type(
+        computation_types.TensorType(tf.int32))
+    self.assertEqual(concrete_fn.type_signature.compact_representation(),
+                     '(int32 -> bool)')
+    concrete_fn = foo.fn_for_argument_type(
+        computation_types.TensorType(tf.float32))
+    self.assertEqual(concrete_fn.type_signature.compact_representation(),
+                     '(float32 -> bool)')
+
+  def test_invoke_with_no_arg_tf_function(self):
+
+    @tf.function
+    def foo():
+      return 10
+
+    foo = computation_wrapper_instances.tensorflow_wrapper(foo)
+    self.assertEqual(foo.type_signature.compact_representation(), '( -> int32)')
+
+  def test_takes_tuple_typed(self):
+
+    @tf.function
+    def foo(t):
+      return t[0] + t[1]
+
     foo = computation_wrapper_instances.tensorflow_wrapper(
-        tf.add, (tf.int32, tf.int32))
-    self.assertEqual(str(foo.type_signature), '(<int32,int32> -> int32)')
+        foo, (tf.int32, tf.int32))
+    self.assertEqual(foo.type_signature.compact_representation(),
+                     '(<int32,int32> -> int32)')
 
-    # TODO(b/113112885): Remove this protected member access as noted above.
-    comp = foo._computation_proto  # pylint: disable=protected-access
+  def test_takes_tuple_polymorphic(self):
 
-    self.assertEqual(comp.WhichOneof('computation'), 'tensorflow')
-    x = tf.compat.v1.placeholder(tf.int32)
-    y = tf.compat.v1.placeholder(tf.int32)
-    result = tf.import_graph_def(
-        serialization_utils.unpack_graph_def(comp.tensorflow.graph_def), {
-            comp.tensorflow.parameter.struct.element[0].tensor.tensor_name: x,
-            comp.tensorflow.parameter.struct.element[1].tensor.tensor_name: y
-        }, [comp.tensorflow.result.tensor.tensor_name])
-    with self.session() as sess:
+    def foo(t):
+      return t[0] + t[1]
 
-      def _run(n):
-        return sess.run(result, feed_dict={x: n, y: 3})
+    foo = computation_wrapper_instances.tensorflow_wrapper(foo)
 
-      results = [_run(n) for n in [1, 20, 5, 10, 30]]
-      self.assertEqual(results, [[4], [23], [8], [13], [33]])
+    concrete_fn = foo.fn_for_argument_type(
+        computation_types.StructType([
+            computation_types.TensorType(tf.int32),
+            computation_types.TensorType(tf.int32),
+        ]))
+    self.assertEqual(concrete_fn.type_signature.compact_representation(),
+                     '(<int32,int32> -> int32)')
+    concrete_fn = foo.fn_for_argument_type(
+        computation_types.StructType([
+            computation_types.TensorType(tf.float32),
+            computation_types.TensorType(tf.float32),
+        ]))
+    self.assertEqual(concrete_fn.type_signature.compact_representation(),
+                     '(<float32,float32> -> float32)')
+
+  def test_takes_structured_tuple_typed(self):
+    MyType = collections.namedtuple('MyType', ['x', 'y'])  # pylint: disable=invalid-name
+
+    @tf.function
+    def foo(x, t, l, odict, my_type):
+      self.assertIsInstance(x, tf.Tensor)
+      self.assertIsInstance(t, tuple)
+      self.assertIsInstance(l, list)
+      self.assertIsInstance(odict, collections.OrderedDict)
+      self.assertIsInstance(my_type, MyType)
+      return x + t[0] + l[0] + odict['foo'] + my_type.x
+
+    foo = computation_wrapper_instances.tensorflow_wrapper(
+        foo, [
+            tf.int32,
+            (tf.int32, tf.int32),
+            [tf.int32, tf.int32],
+            collections.OrderedDict([('foo', tf.int32), ('bar', tf.int32)]),
+            MyType(tf.int32, tf.int32),
+        ])
+    self.assertEqual(
+        foo.type_signature.compact_representation(),
+        '(<x=int32,t=<int32,int32>,l=<int32,int32>,odict=<foo=int32,bar=int32>,my_type=<x=int32,y=int32>> -> int32)'
+    )
+
+  def test_takes_structured_tuple_polymorphic(self):
+    MyType = collections.namedtuple('MyType', ['x', 'y'])  # pylint: disable=invalid-name
+
+    @tf.function
+    def foo(x, t, l, odict, my_type):
+      self.assertIsInstance(x, tf.Tensor)
+      self.assertIsInstance(t, tuple)
+      self.assertIsInstance(l, list)
+      self.assertIsInstance(odict, collections.OrderedDict)
+      self.assertIsInstance(my_type, MyType)
+      return x + t[0] + l[0] + odict['foo'] + my_type.x
+
+    foo = computation_wrapper_instances.tensorflow_wrapper(foo)
+
+    concrete_fn = foo.fn_for_argument_type(
+        computation_types.to_type([
+            tf.int32,
+            (tf.int32, tf.int32),
+            [tf.int32, tf.int32],
+            collections.OrderedDict([('foo', tf.int32), ('bar', tf.int32)]),
+            MyType(tf.int32, tf.int32),
+        ]))
+    self.assertEqual(
+        concrete_fn.type_signature.compact_representation(),
+        '(<int32,<int32,int32>,<int32,int32>,<foo=int32,bar=int32>,<x=int32,y=int32>> -> int32)'
+    )
+    concrete_fn = foo.fn_for_argument_type(
+        computation_types.to_type([
+            tf.float32,
+            (tf.float32, tf.float32),
+            [tf.float32, tf.float32],
+            collections.OrderedDict([('foo', tf.float32), ('bar', tf.float32)]),
+            MyType(tf.float32, tf.float32),
+        ]))
+    self.assertEqual(
+        concrete_fn.type_signature.compact_representation(),
+        '(<float32,<float32,float32>,<float32,float32>,<foo=float32,bar=float32>,<x=float32,y=float32>> -> float32)'
+    )
+
+  def test_returns_tuple_structured(self):
+    MyType = collections.namedtuple('MyType', ['x', 'y'])  # pylint: disable=invalid-name
+
+    @tf.function
+    def foo():
+      return (
+          1,
+          (2, 3.0),
+          [4, 5.0],
+          collections.OrderedDict([('foo', 6), ('bar', 7.0)]),
+          MyType(True, False),
+      )
+
+    foo = computation_wrapper_instances.tensorflow_wrapper(foo)
+
+    # pyformat: disable
+    self.assertEqual(
+        foo.type_signature.compact_representation(),
+        '( -> <int32,<int32,float32>,<int32,float32>,<foo=int32,bar=float32>,<x=bool,y=bool>>)'
+    )
+    # pyformat: enable
+
+  def test_takes_namedtuple_typed(self):
+    MyType = collections.namedtuple('MyType', ['x', 'y'])  # pylint: disable=invalid-name
+
+    @tf.function
+    def foo(x):
+      self.assertIsInstance(x, MyType)
+      return x.x + x.y
+
+    foo = computation_wrapper_instances.tensorflow_wrapper(
+        foo, MyType(tf.int32, tf.int32))
+    self.assertEqual(foo.type_signature.compact_representation(),
+                     '(<x=int32,y=int32> -> int32)')
+
+  def test_takes_namedtuple_polymorphic(self):
+    MyType = collections.namedtuple('MyType', ['x', 'y'])  # pylint: disable=invalid-name
+
+    @tf.function
+    def foo(t):
+      self.assertIsInstance(t, MyType)
+      return t.x + t.y
+
+    foo = computation_wrapper_instances.tensorflow_wrapper(foo)
+
+    concrete_fn = foo.fn_for_argument_type(
+        computation_types.StructWithPythonType([('x', tf.int32),
+                                                ('y', tf.int32)], MyType))
+    self.assertEqual(concrete_fn.type_signature.compact_representation(),
+                     '(<x=int32,y=int32> -> int32)')
+    concrete_fn = foo.fn_for_argument_type(
+        computation_types.StructWithPythonType([('x', tf.float32),
+                                                ('y', tf.float32)], MyType))
+    self.assertEqual(concrete_fn.type_signature.compact_representation(),
+                     '(<x=float32,y=float32> -> float32)')
+
+  def test_with_variable(self):
+    v_slot = []
+
+    @tf.function(autograph=False)
+    def foo(x):
+      if not v_slot:
+        v_slot.append(tf.Variable(0))
+      v = v_slot[0]
+      v.assign(1)
+      return v + x
+
+    foo = computation_wrapper_instances.tensorflow_wrapper(foo, tf.int32)
+    self.assertEqual(foo.type_signature.compact_representation(),
+                     '(int32 -> int32)')
+
+  def test_does_not_raise_type_error_with_sequence_inputs_and_outputs(self):
+    try:
+
+      @computation_wrapper_instances.tensorflow_wrapper(
+          computation_types.SequenceType(tf.int32))
+      def foo(x):  # pylint: disable=unused-variable
+        return x
+
+    except TypeError:
+      self.fail('Raised TypeError unexpectedly.')
+
+  def test_fails_with_bad_types(self):
+    function = computation_types.FunctionType(
+        None, computation_types.TensorType(tf.int32))
+    federated = computation_types.FederatedType(tf.int32,
+                                                placement_literals.CLIENTS)
+    tuple_on_function = computation_types.StructType([federated, function])
+
+    def foo(x):  # pylint: disable=unused-variable
+      del x  # Unused.
+
+    with self.assertRaisesRegex(
+        TypeError,
+        r'you have attempted to create one with the type {int32}@CLIENTS'):
+      computation_wrapper_instances.tensorflow_wrapper(foo, federated)
+
+    # pylint: disable=anomalous-backslash-in-string
+    with self.assertRaisesRegex(
+        TypeError,
+        r'you have attempted to create one with the type \( -> int32\)'):
+      computation_wrapper_instances.tensorflow_wrapper(foo, function)
+
+    with self.assertRaisesRegex(
+        TypeError, r'you have attempted to create one with the type placement'):
+      computation_wrapper_instances.tensorflow_wrapper(
+          foo, computation_types.PlacementType())
+
+    with self.assertRaisesRegex(
+        TypeError, r'you have attempted to create one with the type T'):
+      computation_wrapper_instances.tensorflow_wrapper(
+          foo, computation_types.AbstractType('T'))
+
+    with self.assertRaisesRegex(
+        TypeError,
+        r'you have attempted to create one with the type <{int32}@CLIENTS,\( '
+        '-> int32\)>'):
+      computation_wrapper_instances.tensorflow_wrapper(foo, tuple_on_function)
+    # pylint: enable=anomalous-backslash-in-string
+
+
+class FederatedComputationWrapperTest(test.TestCase):
 
   def test_federated_computation_wrapper(self):
 
@@ -86,61 +380,12 @@ class ComputationWrapperInstancesTest(test.TestCase):
 
     self.assertIsInstance(foo, computation_impl.ComputationImpl)
     self.assertEqual(
-        str(foo.type_signature), '(<(int32 -> int32),int32> -> int32)')
+        str(foo.type_signature), '(<f=(int32 -> int32),x=int32> -> int32)')
 
     self.assertEqual(
         str(foo.to_building_block()),
-        '(FEDERATED_arg -> (let fc_FEDERATED_symbol_0=FEDERATED_arg[0](FEDERATED_arg[1]),fc_FEDERATED_symbol_1=FEDERATED_arg[0](fc_FEDERATED_symbol_0) in fc_FEDERATED_symbol_1))'
+        '(FEDERATED_arg -> (let fc_FEDERATED_symbol_0=FEDERATED_arg.f(FEDERATED_arg.x),fc_FEDERATED_symbol_1=FEDERATED_arg.f(fc_FEDERATED_symbol_0) in fc_FEDERATED_symbol_1))'
     )
-
-  def test_tf_wrapper_fails_bad_types(self):
-    function = computation_types.FunctionType(
-        None, computation_types.TensorType(tf.int32))
-    federated = computation_types.FederatedType(tf.int32,
-                                                placement_literals.CLIENTS)
-    tuple_on_function = computation_types.StructType([federated, function])
-
-    with self.assertRaisesRegex(
-        TypeError,
-        r'you have attempted to create one with the type {int32}@CLIENTS'):
-
-      @computation_wrapper_instances.tensorflow_wrapper(federated)
-      def _(x):
-        del x
-
-    # pylint: disable=anomalous-backslash-in-string
-    with self.assertRaisesRegex(
-        TypeError,
-        r'you have attempted to create one with the type \( -> int32\)'):
-
-      @computation_wrapper_instances.tensorflow_wrapper(function)
-      def _(x):
-        del x
-
-    with self.assertRaisesRegex(
-        TypeError, r'you have attempted to create one with the type placement'):
-
-      @computation_wrapper_instances.tensorflow_wrapper(
-          computation_types.PlacementType())
-      def _(x):
-        del x
-
-    with self.assertRaisesRegex(
-        TypeError, r'you have attempted to create one with the type T'):
-
-      @computation_wrapper_instances.tensorflow_wrapper(
-          computation_types.AbstractType('T'))
-      def _(x):
-        del x
-
-    with self.assertRaisesRegex(
-        TypeError,
-        r'you have attempted to create one with the type <{int32}@CLIENTS,\( '
-        '-> int32\)>'):
-
-      @computation_wrapper_instances.tensorflow_wrapper(tuple_on_function)
-      def _(x):
-        del x
 
 
 class ToComputationImplTest(test.TestCase):
@@ -157,15 +402,6 @@ class ToComputationImplTest(test.TestCase):
     self.assertIsInstance(computation_impl_lambda,
                           computation_impl.ComputationImpl)
 
-  def test_identity_lambda_executes_as_identity(self):
-    lam = building_blocks.Lambda('x', tf.int32,
-                                 building_blocks.Reference('x', tf.int32))
-    computation_impl_lambda = computation_wrapper_instances.building_block_to_computation(
-        lam)
-    for k in range(10):
-      self.assertEqual(computation_impl_lambda(k), k)
-
 
 if __name__ == '__main__':
-  execution_contexts.set_local_execution_context()
   test.main()

@@ -24,20 +24,13 @@ Communication-Efficient Learning of Deep Networks from Decentralized Data
     https://arxiv.org/abs/1602.05629
 """
 
-# TODO(b/147626125): Merge with fed_avg.py to allow for learning rate schedules
-# in the reparameterized federated averaging framework.
-
-# TODO(b/149402127): Implement a check to zero out client updates if any value
-# is non-finite.
-
 import collections
-from typing import Collection, Callable, Optional, Union
+from typing import Callable, Optional, Union
 
 import attr
 import tensorflow as tf
 import tensorflow_federated as tff
 
-from tensorflow_federated.python.research.utils import adapters
 from tensorflow_federated.python.tensorflow_libs import tensor_utils
 
 # Convenience type aliases.
@@ -45,8 +38,6 @@ ModelBuilder = Callable[[], tff.learning.Model]
 OptimizerBuilder = Callable[[float], tf.keras.optimizers.Optimizer]
 ClientWeightFn = Callable[..., float]
 LRScheduleFn = Callable[[int], float]
-
-ModelWeights = collections.namedtuple('ModelWeights', 'trainable non_trainable')
 
 
 def _initialize_optimizer_vars(model: tff.learning.Model,
@@ -60,10 +51,8 @@ def _initialize_optimizer_vars(model: tff.learning.Model,
   assert optimizer.variables()
 
 
-def _get_weights(model: tff.learning.Model) -> ModelWeights:
-  return ModelWeights(
-      trainable=tuple(model.trainable_variables),
-      non_trainable=tuple(model.non_trainable_variables))
+def _get_weights(model: tff.learning.Model) -> tff.learning.ModelWeights:
+  return tff.learning.ModelWeights.from_model(model)
 
 
 @attr.s(eq=False, order=False, frozen=True)
@@ -83,25 +72,20 @@ class ServerState(object):
   # schedules.
 
   @classmethod
-  def assign_weights_to_keras_model(cls, reference_model: ModelWeights,
+  def assign_weights_to_keras_model(cls,
+                                    reference_model: tff.learning.ModelWeights,
                                     keras_model: tf.keras.Model):
     """Assign the model weights to the weights of a `tf.keras.Model`.
 
     Args:
-      reference_model: the `ModelWeights` object to assign weights from.
+      reference_model: the `tff.learning.ModelWeights` object to assign weights
+        from.
       keras_model: the `tf.keras.Model` object to assign weights to.
     """
-    if not isinstance(reference_model, ModelWeights):
+    if not isinstance(reference_model, tff.learning.ModelWeights):
       raise TypeError('The reference model must be an instance of '
-                      'fed_avg_schedule.ModelWeights.')
-
-    def assign_weights(keras_weights, tff_weights):
-      for k, w in zip(keras_weights, tff_weights):
-        k.assign(w)
-
-    assign_weights(keras_model.trainable_weights, reference_model.trainable)
-    assign_weights(keras_model.non_trainable_weights,
-                   reference_model.non_trainable)
+                      'tff.learning.ModelWeights.')
+    reference_model.assign_weights_to(keras_model)
 
 
 @tf.function
@@ -183,7 +167,7 @@ def create_client_update_fn():
     Args:
       model: A `tff.learning.Model`.
       dataset: A 'tf.data.Dataset'.
-      initial_weights: A `tff.learning.Model.weights` from server.
+      initial_weights: A `tff.learning.ModelWeights` from server.
       client_optimizer: A `tf.keras.optimizer.Optimizer` object.
       client_weight_fn: Optional function that takes the output of
         `model.report_local_outputs` and returns a tensor that provides the
@@ -258,29 +242,6 @@ def build_server_init_fn(
   return server_init_tf
 
 
-class FederatedAveragingProcessAdapter(adapters.IterativeProcessPythonAdapter):
-  """Converts iterative process results from anonymous tuples.
-
-  Converts to ServerState and unpacks metrics. This simplifies tasks such as
-  recording metrics.
-  """
-
-  def __init__(self, iterative_process: tff.templates.IterativeProcess):
-    self._iterative_process = iterative_process
-
-  def initialize(self) -> ServerState:
-    return self._iterative_process.initialize()
-
-  def next(
-      self,
-      state: ServerState,
-      data: Collection[tf.data.Dataset],
-  ) -> adapters.IterationResult:
-    state, metrics = self._iterative_process.next(state, data)
-    outputs = None
-    return adapters.IterationResult(state, metrics, outputs)
-
-
 def build_fed_avg_process(
     model_fn: ModelBuilder,
     client_optimizer_fn: OptimizerBuilder,
@@ -288,8 +249,7 @@ def build_fed_avg_process(
     server_optimizer_fn: OptimizerBuilder = tf.keras.optimizers.SGD,
     server_lr: Union[float, LRScheduleFn] = 1.0,
     client_weight_fn: Optional[ClientWeightFn] = None,
-    dataset_preprocess_comp: Optional[tff.Computation] = None,
-) -> FederatedAveragingProcessAdapter:
+) -> tff.templates.IterativeProcess:
   """Builds the TFF computations for optimization using federated averaging.
 
   Args:
@@ -306,13 +266,9 @@ def build_fed_avg_process(
       `model.report_local_outputs` and returns a tensor that provides the weight
       in the federated average of model deltas. If not provided, the default is
       the total number of examples processed on device.
-    dataset_preprocess_comp: Optional `tff.Computation` that sets up a data
-      pipeline on the clients. The computation must take a squence of values
-      and return a sequence of values, or in TFF type shorthand `(U* -> V*)`. If
-      `None`, no dataset preprocessing is applied.
 
   Returns:
-    A `FederatedAveragingProcessAdapter`.
+    A `tff.templates.IterativeProcess`.
   """
 
   client_lr_schedule = client_lr
@@ -333,19 +289,8 @@ def build_fed_avg_process(
   model_weights_type = server_state_type.model
   round_num_type = server_state_type.round_num
 
-  if dataset_preprocess_comp is not None:
-    tf_dataset_type = dataset_preprocess_comp.type_signature.parameter
-    model_input_type = tff.SequenceType(dummy_model.input_spec)
-    preprocessed_dataset_type = dataset_preprocess_comp.type_signature.result
-    if not model_input_type.is_assignable_from(preprocessed_dataset_type):
-      raise TypeError('Supplied `dataset_preprocess_comp` does not yield '
-                      'batches that are compatible with the model constructed '
-                      'by `model_fn`. Model expects type {m}, but dataset '
-                      'yields type {d}.'.format(
-                          m=model_input_type, d=preprocessed_dataset_type))
-  else:
-    tf_dataset_type = tff.SequenceType(dummy_model.input_spec)
-    model_input_type = tff.SequenceType(dummy_model.input_spec)
+  tf_dataset_type = tff.SequenceType(dummy_model.input_spec)
+  model_input_type = tff.SequenceType(dummy_model.input_spec)
 
   @tff.tf_computation(model_input_type, model_weights_type, round_num_type)
   def client_update_fn(tf_dataset, initial_model_weights, round_num):
@@ -381,9 +326,7 @@ def build_fed_avg_process(
     """
     client_model = tff.federated_broadcast(server_state.model)
     client_round_num = tff.federated_broadcast(server_state.round_num)
-    if dataset_preprocess_comp is not None:
-      federated_dataset = tff.federated_map(dataset_preprocess_comp,
-                                            federated_dataset)
+
     client_outputs = tff.federated_map(
         client_update_fn,
         (federated_dataset, client_model, client_round_num))
@@ -406,7 +349,5 @@ def build_fed_avg_process(
   def initialize_fn():
     return tff.federated_value(server_init_tf(), tff.SERVER)
 
-  tff_iterative_process = tff.templates.IterativeProcess(
+  return tff.templates.IterativeProcess(
       initialize_fn=initialize_fn, next_fn=run_one_round)
-
-  return FederatedAveragingProcessAdapter(tff_iterative_process)

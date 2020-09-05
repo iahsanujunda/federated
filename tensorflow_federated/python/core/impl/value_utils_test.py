@@ -19,12 +19,12 @@ import tensorflow as tf
 from tensorflow_federated.python.core.api import computation_types
 from tensorflow_federated.python.core.api import computations
 from tensorflow_federated.python.core.impl import computation_impl
-from tensorflow_federated.python.core.impl import federated_computation_context
 from tensorflow_federated.python.core.impl import value_impl
 from tensorflow_federated.python.core.impl import value_utils
 from tensorflow_federated.python.core.impl.compiler import building_blocks
 from tensorflow_federated.python.core.impl.compiler import tree_transformations
 from tensorflow_federated.python.core.impl.context_stack import context_stack_impl
+from tensorflow_federated.python.core.impl.federated_context import federated_computation_context
 from tensorflow_federated.python.core.impl.types import placement_literals
 
 _context_stack = context_stack_impl.context_stack
@@ -42,7 +42,9 @@ class ValueUtilsTest(parameterized.TestCase):
     add_numbers = value_impl.ValueImpl(
         building_blocks.ComputationBuildingBlock.from_proto(
             computation_impl.ComputationImpl.get_proto(
-                computations.tf_computation(tf.add, [tf.int32, tf.int32]))),
+                computations.tf_computation(
+                    lambda a, b: tf.add(a, b),  # pylint: disable=unnecessary-lambda
+                    [tf.int32, tf.int32]))),
         _context_stack)
 
     curried = value_utils.get_curried(add_numbers)

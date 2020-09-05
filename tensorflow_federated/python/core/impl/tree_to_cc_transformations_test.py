@@ -16,20 +16,23 @@ import tensorflow as tf
 
 from tensorflow_federated.python.common_libs import test
 from tensorflow_federated.python.core.api import computation_types
-from tensorflow_federated.python.core.backends.native import execution_contexts
 from tensorflow_federated.python.core.impl import tree_to_cc_transformations
 from tensorflow_federated.python.core.impl.compiler import building_block_factory
 from tensorflow_federated.python.core.impl.compiler import building_blocks
 from tensorflow_federated.python.core.impl.compiler import tensorflow_computation_factory
 from tensorflow_federated.python.core.impl.compiler import transformation_utils
 from tensorflow_federated.python.core.impl.compiler import tree_transformations
+from tensorflow_federated.python.core.impl.context_stack import set_default_context
+from tensorflow_federated.python.core.impl.executors import execution_context
+from tensorflow_federated.python.core.impl.executors import executor_stacks
 from tensorflow_federated.python.core.impl.wrappers import computation_wrapper_instances
 
 
 def _create_compiled_computation(py_fn, parameter_type):
-  proto = tensorflow_computation_factory.create_computation_for_py_fn(
+  proto, type_signature = tensorflow_computation_factory.create_computation_for_py_fn(
       py_fn, parameter_type)
-  return building_blocks.CompiledComputation(proto)
+  return building_blocks.CompiledComputation(
+      proto, type_signature=type_signature)
 
 
 def parse_tff_to_tf(comp):
@@ -356,5 +359,7 @@ class ParseTFFToTFTest(test.TestCase):
 
 
 if __name__ == '__main__':
-  execution_contexts.set_local_execution_context()
+  factory = executor_stacks.local_executor_factory()
+  context = execution_context.ExecutionContext(executor_fn=factory)
+  set_default_context.set_default_context(context)
   test.main()

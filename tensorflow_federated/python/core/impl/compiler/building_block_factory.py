@@ -13,6 +13,7 @@
 # limitations under the License.
 """A library of contruction functions for building block structures."""
 
+import functools
 import random
 import string
 from typing import AbstractSet, Any, Callable, Iterator, List, Sequence, Optional, Tuple, Union
@@ -58,6 +59,7 @@ def unique_name_generator(comp: building_blocks.ComputationBuildingBlock,
     index += 1
 
 
+@functools.lru_cache()
 def create_compiled_empty_tuple() -> building_blocks.Call:
   """Returns called graph representing the empty tuple.
 
@@ -66,11 +68,13 @@ def create_compiled_empty_tuple() -> building_blocks.Call:
     which returns an empty tuple. This function is an instance of
     `building_blocks.CompiledComputation`.
   """
-  proto = tensorflow_computation_factory.create_empty_tuple()
-  compiled = building_blocks.CompiledComputation(proto)
+  proto, type_signature = tensorflow_computation_factory.create_empty_tuple()
+  compiled = building_blocks.CompiledComputation(
+      proto, type_signature=type_signature)
   return building_blocks.Call(compiled, None)
 
 
+@functools.lru_cache()
 def create_compiled_identity(
     type_signature: computation_types.Type,
     name: Optional[str] = None) -> building_blocks.CompiledComputation:
@@ -89,8 +93,10 @@ def create_compiled_identity(
     TypeError: If `type_signature` contains any types which cannot appear in
       TensorFlow bindings.
   """
-  proto = tensorflow_computation_factory.create_identity(type_signature)
-  return building_blocks.CompiledComputation(proto, name)
+  proto, function_type = tensorflow_computation_factory.create_identity(
+      type_signature)
+  return building_blocks.CompiledComputation(
+      proto, name, type_signature=function_type)
 
 
 class SelectionSpec(object):
@@ -138,6 +144,7 @@ def _extract_selections(parameter_value, output_spec):
   return results
 
 
+@functools.lru_cache()
 def construct_tensorflow_selecting_and_packing_outputs(
     parameter_type: computation_types.StructType,
     output_structure: structure.Struct) -> building_blocks.CompiledComputation:
@@ -160,11 +167,11 @@ def construct_tensorflow_selecting_and_packing_outputs(
   `output_structure`) will be selections from the argument.
 
   Args:
-    parameter_type: A `computation_types.StructType` of the argument on
-      which the constructed function will be called.
+    parameter_type: A `computation_types.StructType` of the argument on which
+      the constructed function will be called.
     output_structure: `structure.Struct` with `SelectionSpec` or
-      `anonymous_tupl.Struct` elements, mapping from elements of the
-      nested argument tuple to the desired result of the generated computation.
+      `anonymous_tupl.Struct` elements, mapping from elements of the nested
+      argument tuple to the desired result of the generated computation.
       `output_structure` must contain all the names desired on the output of the
       computation.
 
@@ -211,9 +218,11 @@ def construct_tensorflow_selecting_and_packing_outputs(
           graph_def=serialization_utils.pack_graph_def(graph.as_graph_def()),
           parameter=parameter_binding,
           result=result_binding))
-  return building_blocks.CompiledComputation(proto)
+  return building_blocks.CompiledComputation(
+      proto, type_signature=function_type)
 
 
+@functools.lru_cache()
 def create_tensorflow_constant(type_spec: computation_types.Type,
                                scalar_value: Union[int, float, str],
                                name=None) -> building_blocks.Call:
@@ -238,12 +247,14 @@ def create_tensorflow_constant(type_spec: computation_types.Type,
   Raises:
     TypeError: If the type assumptions above are violated.
   """
-  proto = tensorflow_computation_factory.create_constant(
+  proto, function_type = tensorflow_computation_factory.create_constant(
       scalar_value, type_spec)
-  compiled = building_blocks.CompiledComputation(proto, name)
+  compiled = building_blocks.CompiledComputation(
+      proto, name, type_signature=function_type)
   return building_blocks.Call(compiled, None)
 
 
+@functools.lru_cache()
 def create_compiled_input_replication(
     type_signature: computation_types.Type,
     n_replicas: int) -> building_blocks.CompiledComputation:
@@ -264,36 +275,9 @@ def create_compiled_input_replication(
     TypeError: If `type_signature` contains any types which cannot appear in
       TensorFlow bindings, or if `n_replicas` is not an integer.
   """
-  proto = tensorflow_computation_factory.create_replicate_input(
+  proto, comp_type = tensorflow_computation_factory.create_replicate_input(
       type_signature, n_replicas)
-  return building_blocks.CompiledComputation(proto)
-
-
-def create_tensorflow_to_broadcast_scalar(
-    scalar_type: tf.dtypes.DType,
-    new_shape: tf.TensorShape) -> building_blocks.CompiledComputation:
-  """Creates TF function broadcasting scalar to shape `new_shape`.
-
-  Args:
-    scalar_type: Instance of `tf.DType`, the type of the scalar we are looking
-      to broadcast.
-    new_shape: Instance of `tf.TensorShape`, the shape we wish to broadcast to.
-      Must be fully defined.
-
-  Returns:
-    Instance of `building_blocks.CompiledComputation` representing
-    a function declaring a scalar parameter of dtype `scalar_type`, and
-    returning a tensor of this same dtype and shape `new_shape`, with the same
-    value in each entry as its scalar argument.
-
-  Raises:
-    TypeError: If the types of the arguments do not match the declared arg
-    types.
-    ValueError: If `new_shape` is not fully defined.
-  """
-  proto = tensorflow_computation_factory.create_broadcast_scalar_to_shape(
-      scalar_type, new_shape)
-  return building_blocks.CompiledComputation(proto)
+  return building_blocks.CompiledComputation(proto, type_signature=comp_type)
 
 
 def create_tensorflow_binary_operator(
@@ -333,9 +317,10 @@ def create_tensorflow_binary_operator(
     `type_analysis.is_generic_op_compatible_type`, or `operator` is not
     callable.
   """
-  proto = tensorflow_computation_factory.create_binary_operator(
+  proto, type_signature = tensorflow_computation_factory.create_binary_operator(
       operator, operand_type)
-  return building_blocks.CompiledComputation(proto)
+  return building_blocks.CompiledComputation(
+      proto, type_signature=type_signature)
 
 
 def create_federated_getitem_call(
@@ -346,8 +331,7 @@ def create_federated_getitem_call(
   Args:
     arg: Instance of `building_blocks.ComputationBuildingBlock` of
       `computation_types.FederatedType` with member of type
-      `computation_types.StructType` from which we wish to pick out item
-      `idx`.
+      `computation_types.StructType` from which we wish to pick out item `idx`.
     idx: Index, instance of `int` or `slice` used to address the
       `computation_types.StructType` underlying `arg`.
 
@@ -373,10 +357,9 @@ def create_federated_getattr_call(arg: building_blocks.ComputationBuildingBlock,
   Args:
     arg: Instance of `building_blocks.ComputationBuildingBlock` of
       `computation_types.FederatedType` with member of type
-      `computation_types.StructType` from which we wish to pick out item
-      `name`.
-    name: String name to address the `computation_types.StructType`
-      underlying `arg`.
+      `computation_types.StructType` from which we wish to pick out item `name`.
+    name: String name to address the `computation_types.StructType` underlying
+      `arg`.
 
   Returns:
     Returns a `building_blocks.Call` with type signature
@@ -411,8 +394,8 @@ def create_federated_setattr_call(
   Args:
     federated_comp: Instance of `building_blocks.ComputationBuildingBlock` of
       type `computation_types.FederatedType`, with member of type
-      `computation_types.StructType` whose attribute `name` we wish to set
-      to `value_comp`.
+      `computation_types.StructType` whose attribute `name` we wish to set to
+      `value_comp`.
     name: String name of the attribute we wish to overwrite in `federated_comp`.
     value_comp: Instance of `building_blocks.ComputationBuildingBlock`, the
       value to assign to `federated_comp`'s `member`'s `name` attribute.
@@ -436,6 +419,7 @@ def create_federated_setattr_call(
   return create_federated_map_or_apply(setattr_lambda, federated_comp)
 
 
+@functools.lru_cache()
 def create_named_tuple_setattr_lambda(
     named_tuple_signature: computation_types.StructType, name: str,
     value_comp: building_blocks.ComputationBuildingBlock
@@ -450,8 +434,8 @@ def create_named_tuple_setattr_lambda(
   type `named_tuple_signature`.
 
   Args:
-    named_tuple_signature: Instance of `computation_types.StructType`, the
-      type of the argument to the constructed `building_blocks.Lambda`.
+    named_tuple_signature: Instance of `computation_types.StructType`, the type
+      of the argument to the constructed `building_blocks.Lambda`.
     name: String name of the attribute in the `named_tuple_signature` to replace
       with `value_comp`. Must be present as a name in `named_tuple_signature;
       otherwise we will raise an `AttributeError`.
@@ -633,6 +617,19 @@ def create_computation_appending(
   return building_blocks.Block(symbols, result)
 
 
+def _unname_fn_parameter(fn, unnamed_parameter_type):
+  """Coerces `fn` to a comp whose parameter type is `unnamed_parameter_type`."""
+  if structure.name_list(fn.type_signature.parameter):
+    return building_blocks.Lambda(
+        'a', unnamed_parameter_type,
+        building_blocks.Call(
+            fn,
+            building_blocks.Reference('a', unnamed_parameter_type),
+        ))
+  else:
+    return fn
+
+
 def create_federated_aggregate(
     value: building_blocks.ComputationBuildingBlock,
     zero: building_blocks.ComputationBuildingBlock,
@@ -676,6 +673,13 @@ def create_federated_aggregate(
   zero_arg_type.check_assignable_from(zero.type_signature)
   result_type = computation_types.FederatedType(report.type_signature.result,
                                                 placement_literals.SERVER)
+
+  accumulate_parameter_type = computation_types.StructType(
+      [zero_arg_type, value.type_signature.member])
+  accumulate = _unname_fn_parameter(accumulate, accumulate_parameter_type)
+  merge_parameter_type = computation_types.StructType(
+      [zero_arg_type, zero_arg_type])
+  merge = _unname_fn_parameter(merge, merge_parameter_type)
 
   intrinsic_type = computation_types.FunctionType((
       type_conversions.type_to_non_all_equal(value.type_signature),
@@ -998,6 +1002,12 @@ def create_federated_reduce(
   py_typecheck.check_type(op, building_blocks.ComputationBuildingBlock)
   result_type = computation_types.FederatedType(op.type_signature.result,
                                                 placement_literals.SERVER)
+  # Remove names from `op`'s argument.
+  parameter_type = computation_types.StructType([
+      zero.type_signature,
+      value.type_signature.member,
+  ])
+  op = _unname_fn_parameter(op, parameter_type)
   intrinsic_type = computation_types.FunctionType((
       type_conversions.type_to_non_all_equal(value.type_signature),
       zero.type_signature,
@@ -1093,8 +1103,7 @@ def create_federated_unzip(
 
   Args:
     value: A `building_blocks.ComputationBuildingBlock` with a `type_signature`
-      of type `computation_types.StructType` containing at least one
-      element.
+      of type `computation_types.StructType` containing at least one element.
 
   Returns:
     A `building_blocks.Block`.
@@ -1170,8 +1179,7 @@ def _create_flat_federated_zip(value):
 
   Args:
     value: A `building_blocks.ComputationBuildingBlock` with a `type_signature`
-      of type `computation_types.StructType` containing at least one
-      element.
+      of type `computation_types.StructType` containing at least one element.
 
   Returns:
     A `building_blocks.Call`.
@@ -1321,9 +1329,9 @@ def create_federated_zip(
   Args:
     value: A `building_blocks.ComputationBuildingBlock` with a `type_signature`
       of type `computation_types.StructType` that may contain other nested
-      `computation_types.StructTypes` bottoming out in at least one element
-      of type `computation_Types.FederatedType`. These federated types must be
-      at the same placement.
+      `computation_types.StructTypes` bottoming out in at least one element of
+      type `computation_Types.FederatedType`. These federated types must be at
+      the same placement.
 
   Returns:
     A `building_blocks.Call` whose type signature is now a federated
@@ -1404,6 +1412,7 @@ def create_federated_zip(
     raise TypeError('Unsupported placement {}.'.format(placement))
 
 
+@functools.lru_cache()
 def create_generic_constant(
     type_spec: Optional[computation_types.Type],
     scalar_value: Union[int,
@@ -1491,8 +1500,7 @@ def create_zip_two_values(
 
   Args:
     value: A `building_blocks.ComputationBuildingBlock` with a `type_signature`
-      of type `computation_types.StructType` containing exactly two
-      elements.
+      of type `computation_types.StructType` containing exactly two elements.
 
   Returns:
     A `building_blocks.Call`.
@@ -1590,6 +1598,9 @@ def create_sequence_reduce(
   py_typecheck.check_type(value, building_blocks.ComputationBuildingBlock)
   py_typecheck.check_type(zero, building_blocks.ComputationBuildingBlock)
   py_typecheck.check_type(op, building_blocks.ComputationBuildingBlock)
+  op_parameter_type = computation_types.StructType(
+      [zero.type_signature, value.type_signature.element])
+  op = _unname_fn_parameter(op, op_parameter_type)
   intrinsic_type = computation_types.FunctionType((
       value.type_signature,
       zero.type_signature,
@@ -1630,8 +1641,8 @@ def _create_naming_function(tuple_type_to_name, names_to_add, container_type):
   """Private function to construct lambda naming a given tuple type.
 
   Args:
-    tuple_type_to_name: Instance of `computation_types.StructType`, the type
-      of the argument which we wish to name.
+    tuple_type_to_name: Instance of `computation_types.StructType`, the type of
+      the argument which we wish to name.
     names_to_add: Python `list` or `tuple`, the names we wish to give to
       `tuple_type_to_name`.
     container_type: Optional Python container type to associate with the
@@ -1682,9 +1693,8 @@ def create_named_federated_tuple(
 
   Args:
     tuple_to_name: Instance of `building_blocks.ComputationBuildingBlock` of
-      type `computation_types.FederatedType` with
-      `computation_types.StructType` member, to populate with names from
-      `names_to_add`.
+      type `computation_types.FederatedType` with `computation_types.StructType`
+      member, to populate with names from `names_to_add`.
     names_to_add: Python `tuple` or `list` containing instances of type `str` or
       `None`, the names to give to `tuple_to_name`.
     container_type: An optional Python type to associate with the resulting
@@ -1840,6 +1850,7 @@ def _check_generic_operator_type(type_spec):
         'more details.'.format(type_spec))
 
 
+@functools.lru_cache()
 def create_tensorflow_binary_operator_with_upcast(
     type_signature: computation_types.Type,
     operator: Callable[[Any, Any], Any]) -> building_blocks.CompiledComputation:
@@ -1849,10 +1860,10 @@ def create_tensorflow_binary_operator_with_upcast(
   `apply_binary_operator_with_upcast`.
 
   Args:
-    type_signature: Value convertible to `computation_types.StructType`,
-      with two elements, both of the same type or the second able to be upcast
-      to the first, as explained in `apply_binary_operator_with_upcast`, and
-      both containing only tuples and tensors in their type tree.
+    type_signature: Value convertible to `computation_types.StructType`, with
+      two elements, both of the same type or the second able to be upcast to the
+      first, as explained in `apply_binary_operator_with_upcast`, and both
+      containing only tuples and tensors in their type tree.
     operator: Callable defining the operator.
 
   Returns:
@@ -1863,9 +1874,10 @@ def create_tensorflow_binary_operator_with_upcast(
   py_typecheck.check_callable(operator)
   _check_generic_operator_type(type_signature)
   type_analysis.check_tensorflow_compatible_type(type_signature)
-  tf_proto = tensorflow_computation_factory.create_binary_operator_with_upcast(
+  tf_proto, type_signature = tensorflow_computation_factory.create_binary_operator_with_upcast(
       type_signature, operator)
-  compiled = building_blocks.CompiledComputation(tf_proto)
+  compiled = building_blocks.CompiledComputation(
+      tf_proto, type_signature=type_signature)
   return compiled
 
 

@@ -102,7 +102,7 @@ def _build_test_measured_broadcast(
       computation_types.FederatedType(tf.int32, placements.SERVER),
       computation_types.FederatedType(model_weights_type, placements.SERVER))
   def next_comp(state, value):
-    return collections.OrderedDict(
+    return measured_process.MeasuredProcessOutput(
         state=intrinsics.federated_map(_add_one, state),
         result=intrinsics.federated_broadcast(value),
         # Arbitrary metrics for testing.
@@ -129,7 +129,7 @@ def _build_test_measured_mean(
       computation_types.FederatedType(model_update_type, placements.CLIENTS),
       computation_types.FederatedType(tf.float32, placements.CLIENTS))
   def next_comp(state, value, weight):
-    return collections.OrderedDict(
+    return measured_process.MeasuredProcessOutput(
         state=intrinsics.federated_map(_add_one, state),
         result=intrinsics.federated_mean(value, weight),
         measurements=intrinsics.federated_zip(
@@ -236,7 +236,10 @@ class ModelDeltaOptimizerTest(test.TestCase):
         str(iterative_process.next.type_signature),
         str(
             computation_types.FunctionType(
-                parameter=(server_state_type, dataset_type),
+                parameter=collections.OrderedDict(
+                    server_state=server_state_type,
+                    federated_dataset=dataset_type,
+                ),
                 result=(server_state_type, metrics_type))))
 
   def test_construction_with_adam_optimizer(self):

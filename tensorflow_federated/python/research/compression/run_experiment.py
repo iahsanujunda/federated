@@ -31,7 +31,6 @@ from absl import flags
 import tensorflow as tf
 import tensorflow_federated as tff
 
-from tensorflow_federated.python.research.compression import compression_process_adapter
 from tensorflow_federated.python.research.compression import sparsity
 from tensorflow_federated.python.research.utils import training_loop
 from tensorflow_federated.python.research.utils import training_utils
@@ -41,7 +40,7 @@ from tensorflow_federated.python.research.utils.models import emnist_models
 from tensorflow_model_optimization.python.core.internal import tensor_encoding as te
 
 
-with utils_impl.record_new_flags() as hparam_flags:
+with utils_impl.record_new_flags():
   # Training hyperparameters
   flags.DEFINE_integer('clients_per_round', 2,
                        'How many clients to sample per round.')
@@ -73,9 +72,49 @@ with utils_impl.record_new_flags() as hparam_flags:
                        'Whether to add sparsity to the aggregation. This will '
                        'only be used for client to server compression.')
 
+with utils_impl.record_new_flags() as training_loop_flags:
+  flags.DEFINE_integer('total_rounds', 200, 'Number of total training rounds.')
+  flags.DEFINE_string(
+      'experiment_name', None, 'The name of this experiment. Will be append to '
+      '--root_output_dir to separate experiment results.')
+  flags.DEFINE_string('root_output_dir', '/tmp/compression/',
+                      'Root directory for writing experiment output.')
+  flags.DEFINE_boolean(
+      'write_metrics_with_bz2', True, 'Whether to use bz2 '
+      'compression when writing output metrics to a csv file.')
+  flags.DEFINE_integer(
+      'rounds_per_eval', 1,
+      'How often to evaluate the global model on the validation dataset.')
+  flags.DEFINE_integer('rounds_per_checkpoint', 50,
+                       'How often to checkpoint the global model.')
+  flags.DEFINE_integer(
+      'rounds_per_profile', 0,
+      '(Experimental) How often to run the experimental TF profiler, if >0.')
+
 # End of hyperparameter flags.
 
 FLAGS = flags.FLAGS
+
+
+def assign_weights_fn(reference_model, keras_model):
+  """Assign tff.learning.ModelWeights to the weights of a `tf.keras.Model`.
+
+  Args:
+    reference_model: the `tff.learning.ModelWeights` object to assign weights
+      from.
+    keras_model: the `tf.keras.Model` object to assign weights to.
+  """
+  if not isinstance(reference_model, tff.learning.ModelWeights):
+    raise TypeError('The reference model must be an instance of '
+                    'tff.learning.ModelWeights.')
+
+  def assign_weights(keras_weights, tff_weights):
+    for k, w in zip(keras_weights, tff_weights):
+      k.assign(w)
+
+  assign_weights(keras_model.trainable_weights, reference_model.trainable)
+  assign_weights(keras_model.non_trainable_weights,
+                 reference_model.non_trainable)
 
 
 def model_builder():
@@ -163,8 +202,6 @@ def run_experiment():
   client_datasets_fn = training_utils.build_client_datasets_fn(
       emnist_train, FLAGS.clients_per_round)
 
-  assign_weights_fn = compression_process_adapter.CompressionServerState.assign_weights_to_keras_model
-
   evaluate_fn = training_utils.build_evaluate_fn(
       eval_dataset=emnist_test,
       model_builder=model_builder,
@@ -207,22 +244,23 @@ def run_experiment():
       server_optimizer_fn=server_optimizer_fn,
       aggregation_process=encoded_mean_process,
       broadcast_process=encoded_broadcast_process)
-  iterative_process = compression_process_adapter.CompressionProcessAdapter(
-      iterative_process)
+
+  hparam_dict = utils_impl.lookup_flag_values(utils_impl.get_hparam_flags())
+  training_loop_dict = utils_impl.lookup_flag_values(training_loop_flags)
 
   training_loop.run(
       iterative_process=iterative_process,
       client_datasets_fn=client_datasets_fn,
-      validation_fn=evaluate_fn)
+      validation_fn=evaluate_fn,
+      hparam_dict=hparam_dict,
+      **training_loop_dict)
 
 
 def main(argv):
   if len(argv) > 1:
     raise app.UsageError('Expected no command-line arguments, '
                          'got: {}'.format(argv))
-
   tff.backends.native.set_local_execution_context(max_fanout=25)
-
   run_experiment()
 
 

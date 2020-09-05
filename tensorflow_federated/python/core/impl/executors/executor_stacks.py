@@ -14,7 +14,7 @@
 """A collection of constructors for basic types of executor stacks."""
 
 import math
-from typing import List, Callable, Optional, Sequence
+from typing import Callable, List, Optional, Sequence
 
 import tensorflow as tf
 
@@ -33,13 +33,15 @@ from tensorflow_federated.python.core.impl.types import placement_literals
 
 
 def _wrap_executor_in_threading_stack(ex: executor_base.Executor,
-                                      use_caching: Optional[bool] = True):
+                                      use_caching: Optional[bool] = True,
+                                      can_resolve_references=True):
   threaded_ex = thread_delegating_executor.ThreadDelegatingExecutor(ex)
   if use_caching:
     threaded_ex = caching_executor.CachingExecutor(threaded_ex)
-  rre_wrapped_ex = reference_resolving_executor.ReferenceResolvingExecutor(
-      threaded_ex)
-  return rre_wrapped_ex
+  if can_resolve_references:
+    threaded_ex = reference_resolving_executor.ReferenceResolvingExecutor(
+        threaded_ex)
+  return threaded_ex
 
 
 class UnplacedExecutorFactory(executor_factory.ExecutorFactory):
@@ -54,9 +56,11 @@ class UnplacedExecutorFactory(executor_factory.ExecutorFactory):
       self,
       *,
       use_caching: bool,
+      can_resolve_references: bool = True,
       server_device: Optional[tf.config.LogicalDevice] = None,
       client_devices: Optional[Sequence[tf.config.LogicalDevice]] = ()):
     self._use_caching = use_caching
+    self._can_resolve_references = can_resolve_references
     self._server_device = server_device
     self._client_devices = client_devices
     self._client_device_index = 0
@@ -86,7 +90,10 @@ class UnplacedExecutorFactory(executor_factory.ExecutorFactory):
     else:
       device = None
     eager_ex = eager_tf_executor.EagerTFExecutor(device=device)
-    return _wrap_executor_in_threading_stack(eager_ex)
+    return _wrap_executor_in_threading_stack(
+        eager_ex,
+        use_caching=self._use_caching,
+        can_resolve_references=self._can_resolve_references)
 
   def clean_up_executors(self):
     # Does not hold any executors internally, so nothing to clean up.
@@ -195,10 +202,9 @@ class FederatingExecutorFactory(executor_factory.ExecutorFactory):
             ],
             placement_literals.SERVER:
                 self._unplaced_executor_factory.create_executor(
-                    cardinalities={}, placement=placement_literals.SERVER),
+                    placement=placement_literals.SERVER),
         })
-    unplaced_executor = self._unplaced_executor_factory.create_executor(
-        cardinalities={})
+    unplaced_executor = self._unplaced_executor_factory.create_executor()
     executor = federating_executor.FederatingExecutor(
         federating_strategy_factory, unplaced_executor)
     return _wrap_executor_in_threading_stack(executor)
@@ -208,102 +214,147 @@ class FederatingExecutorFactory(executor_factory.ExecutorFactory):
     pass
 
 
-def _create_composite_stack(
-    target_executors,
-    unplaced_ex_factory: UnplacedExecutorFactory) -> executor_base.Executor:
-  """Creates a single composite stack."""
-  server_executor = unplaced_ex_factory.create_executor(
-      placement=placement_literals.SERVER)
-  federating_strategy_factory = federated_composing_strategy.FederatedComposingStrategy.factory(
-      server_executor, target_executors)
-  unplaced_executor = unplaced_ex_factory.create_executor(
-      placement=placement_literals.SERVER)
-  executor = federating_executor.FederatingExecutor(federating_strategy_factory,
-                                                    unplaced_executor)
-  return _wrap_executor_in_threading_stack(executor)
+def create_minimal_length_flat_stack_fn(
+    max_clients_per_stack: int,
+    federated_stack_factory: FederatingExecutorFactory
+) -> Callable[[executor_factory.CardinalitiesType],
+              List[executor_base.Executor]]:
+  """Creates a function returning a list of executors to run `cardinalities`.
 
-
-def _aggregate_stacks(
-    executors: Sequence[executor_base.Executor], max_fanout: int,
-    unplaced_ex_factory: UnplacedExecutorFactory) -> executor_base.Executor:
-  """Aggregates multiple stacks into a single composite executor.
+  This list is of minimal length among all lists subject to the constraint that
+  each executor can be responsible for executing no more than
+  `max_clients_per_stack`. For example, given a `cardinalities` argument of 10
+  and `max_clients_per_stack` of 3, this function may return a list of
+  executors 3 of which run 3 clients and 1 of which runs 1, or 2 of which run 3
+  and 2 of which run 2.
 
   Args:
-    executors: Executors to aggregate as a `list`.
-    max_fanout: The max fanout (see below).
-    unplaced_ex_factory: The unplaced executor factory to use in constructing
-      executors to execute unplaced computations in the hierarchy.
+    max_clients_per_stack: Integer determining the maximum number of clients a
+      single executor in the list returned by the function may execute.
+    federated_stack_factory: The `FederatingExecutorFactory` for use in actually
+      constructing these executors.
 
   Returns:
-    An executor stack, potentially multi-level, that spans all `executors`.
-
-  Raises:
-    RuntimeError: If it can't create composite executors.
+    A callable taking a parameter of type `executor_factory.CardinalitiesType`,
+    and returning a list of `executor_base.Executors` which in total can execute
+    the cardinalities specified by the argument. This callable will raise if it
+    is passed a cardinalitites dict with a negative number of clients.
   """
-  py_typecheck.check_type(executors, list)
-  py_typecheck.check_type(max_fanout, int)
-  if max_fanout < 2:
-    raise ValueError('Max fanout must be greater than 1.')
-  for ex in executors:
-    py_typecheck.check_type(ex, executor_base.Executor)
-  # Recursively construct as many levels as it takes to support all clients,
-  # reducing by the factor of `max_fanout` in each iteration, for up to
-  # `log(len(address_list)) / log(max_fanout)` iterations.
-  while len(executors) > 1:
-    new_executors = []
-    offset = 0
-    while offset < len(executors):
-      new_offset = offset + max_fanout
-      new_executors.append(
-          _create_composite_stack(
-              executors[offset:new_offset],
-              unplaced_ex_factory=unplaced_ex_factory))
-      offset = new_offset
-    executors = new_executors
-  if len(executors) != 1:
-    raise RuntimeError('Expected 1 executor, got {}.'.format(len(executors)))
-  return executors[0]
 
-
-def _create_full_stack(
-    cardinalities: executor_factory.CardinalitiesType,
-    max_fanout: int,
-    stack_func: Callable[[executor_factory.CardinalitiesType],
-                         executor_base.Executor],
-    unplaced_ex_factory: UnplacedExecutorFactory,
-) -> executor_base.Executor:
-  """Creates a full executor stack.
-
-  Args:
-    cardinalities: The cardinalities to create at each placement.
-    max_fanout: The maximum fanout at any point in the hierarchy. Must be 2 or
-      larger.
-    stack_func: A function taking a dict of cardinalities and returning an
-      `executor_base.Executor`.
-    unplaced_ex_factory: The unplaced executor factory to use in constructing
-      executors to execute unplaced computations in the hierarchy.
-
-  Returns:
-    An executor stack, potentially multi-level, that spans all clients.
-
-  Raises:
-    ValueError: If the number of clients or fanout are not as specified.
-    RuntimeError: If the stack construction fails.
-  """
-  num_clients = cardinalities.get(placement_literals.CLIENTS, 0)
-  py_typecheck.check_type(max_fanout, int)
-  if num_clients < 0:
-    raise ValueError('Number of clients cannot be negative.')
-  if num_clients < 1:
-    return stack_func(cardinalities=cardinalities)  # pytype: disable=wrong-keyword-args
-  else:
+  def create_executor_list(
+      cardinalities: executor_factory.CardinalitiesType
+  ) -> List[executor_base.Executor]:
+    num_clients = cardinalities.get(placement_literals.CLIENTS, 0)
+    if num_clients < 0:
+      raise ValueError('Number of clients cannot be negative.')
+    elif num_clients < 1:
+      return [
+          federated_stack_factory.create_executor(cardinalities=cardinalities)
+      ]
     executors = []
     while num_clients > 0:
-      n = min(num_clients, max_fanout)
+      n = min(num_clients, max_clients_per_stack)
+      sub_executor_cardinalities = {**cardinalities}
+      sub_executor_cardinalities[placement_literals.CLIENTS] = n
       executors.append(
-          stack_func(cardinalities={placement_literals.CLIENTS: n}))  # pytype: disable=wrong-keyword-args
+          federated_stack_factory.create_executor(sub_executor_cardinalities))
       num_clients -= n
-    return _aggregate_stacks(executors, max_fanout, unplaced_ex_factory)
+    return executors
+
+  return create_executor_list
+
+
+class ComposingExecutorFactory(executor_factory.ExecutorFactory):
+  """Factory class encapsulating executor compositional logic.
+
+  This class is responsible for aggregating lists of executors into a
+  compositional hierarchy based on the `max_fanout` parameter.
+  """
+
+  def __init__(self, *, max_fanout: int,
+               unplaced_ex_factory: UnplacedExecutorFactory,
+               flat_stack_fn: Callable[[executor_factory.CardinalitiesType],
+                                       Sequence[executor_base.Executor]]):
+    if max_fanout < 2:
+      raise ValueError('Max fanout must be greater than 1.')
+    self._flat_stack_fn = flat_stack_fn
+    self._max_fanout = max_fanout
+    self._unplaced_ex_factory = unplaced_ex_factory
+
+  def create_executor(
+      self, cardinalities: executor_factory.CardinalitiesType
+  ) -> executor_base.Executor:
+    """Creates an executor hierarchy of maximum width `self._max_fanout`.
+
+    First creates a flat list of executors to aggregate, using the
+    `flat_stack_fn` passed in at initialization. Then composes this list
+    into a hierarchy of width at most `self._max_fanout`.
+
+    Args:
+      cardinalities: A mapping from placements to integers specifying the
+        cardinalities at each placement
+
+    Returns:
+      An `executor_base.Executor` satisfying the conditions above.
+    """
+    executors = self._flat_stack_fn(cardinalities)
+    return self._aggregate_stacks(executors)
+
+  def clean_up_executors(self):
+    """Holds no executors internally, so passes on cleanup."""
+    pass
+
+  def _create_composing_stack(
+      self, *, server_executor: executor_base.Executor,
+      target_executors: Sequence[executor_base.Executor]
+  ) -> executor_base.Executor:
+    composing_strategy_factory = federated_composing_strategy.FederatedComposingStrategy.factory(
+        server_executor, target_executors)
+    unplaced_executor = self._unplaced_ex_factory.create_executor()
+    composing_executor = federating_executor.FederatingExecutor(
+        composing_strategy_factory, unplaced_executor)
+    threaded_composing_executor = _wrap_executor_in_threading_stack(
+        composing_executor)
+    return threaded_composing_executor
+
+  def _aggregate_stacks(
+      self,
+      executors: Sequence[executor_base.Executor],
+  ) -> executor_base.Executor:
+    """Hierarchically aggregates a sequence of executors via composing strategy.
+
+    Constructs as many levels as it takes to support all executors, reducing
+    by the factor of `self._max_fanout` in each iteration, for up to
+    `log(len(address_list)) / log(max_fanout)` iterations.
+
+    Args:
+      executors: Sequence of `executor_base.Executors` to aggregate into a
+        composing hierarchy.
+
+    Returns:
+      A single `executor_base.Executor` representing the aggregated hierarchy.
+      The particular architecture of this hierarchy depends on the interplay
+      between `self._max_fanout` and the length of the sequence of executors.
+
+    Raises:
+      RuntimeError: If hierarchy construction fails.
+    """
+    while len(executors) > 1:
+      new_executors = []
+      offset = 0
+      while offset < len(executors):
+        new_offset = offset + self._max_fanout
+        server_executor = self._unplaced_ex_factory.create_executor(
+            placement=placement_literals.SERVER)
+        target_executors = executors[offset:new_offset]
+        composing_executor = self._create_composing_stack(
+            server_executor=server_executor, target_executors=target_executors)
+        new_executors.append(composing_executor)
+        offset = new_offset
+      executors = new_executors
+    if len(executors) != 1:
+      raise RuntimeError('Expected 1 executor, got {}.'.format(len(executors)))
+    return executors[0]
 
 
 def local_executor_factory(
@@ -364,24 +415,92 @@ def local_executor_factory(
       unplaced_ex_factory=unplaced_ex_factory,
       num_clients=num_clients,
       use_sizing=False)
+  flat_stack_fn = create_minimal_length_flat_stack_fn(
+      max_fanout, federating_executor_factory)
+  full_stack_factory = ComposingExecutorFactory(
+      max_fanout=max_fanout,
+      unplaced_ex_factory=unplaced_ex_factory,
+      flat_stack_fn=flat_stack_fn,
+  )
+  return executor_factory.ExecutorFactoryImpl(
+      full_stack_factory.create_executor)
 
-  def _factory_fn(
-      cardinalities: executor_factory.CardinalitiesType
-  ) -> executor_base.Executor:
-    return _create_full_stack(
-        cardinalities,
-        max_fanout,
-        stack_func=federating_executor_factory.create_executor,
-        unplaced_ex_factory=unplaced_ex_factory)
 
-  return executor_factory.ExecutorFactoryImpl(_factory_fn)
+def thread_debugging_executor_factory(
+    num_clients=None,
+    clients_per_thread=1,
+) -> executor_factory.ExecutorFactory:
+  r"""Constructs a simplified execution stack to execute local computations.
+
+  The constructed executors support a limited set of TFF's computations. In
+  particular, the debug executor can only resolve references at the top level
+  of the stack, and therefore assumes that all local computation is expressed
+  in pure TensorFlow.
+
+  The debug executor makes particular guarantees about the structure of the
+  stacks it constructs which are intended to make them maximally easy to reason
+  about. That is, the debug executor will essentially execute exactly the
+  computation it is passed (in particular, this implies that there are no
+  caching layers), and uses its declared inability to execute arbitrary TFF
+  lambdas to reduce the complexity of the constructed stack. Every debugging
+  executor will have a similar structure, the simplest structure that can
+  execute the full expressivity of TFF while running each client in a dedicated
+  thread:
+
+
+                        ReferenceResolvingExecutor
+                                  |
+                            FederatingExecutor
+                          /       ...         \
+    ThreadDelegatingExecutor                  ThreadDelegatingExecutor
+                |                                         |
+        EagerTFExecutor                            EagerTFExecutor
+
+
+  This structure can be useful in understanding the concurrency pattern of TFF
+  execution, and where the TFF runtime infers data dependencies.
+
+  Args:
+    num_clients: The number of clients. If specified, the executor factory
+      function returned by `local_executor_factory` will be configured to have
+      exactly `num_clients` clients. If unspecified (`None`), then the function
+      returned will attempt to infer cardinalities of all placements for which
+      it is passed values.
+    clients_per_thread: Integer number of clients for each of TFF's threads to
+      run in sequence. Increasing `clients_per_thread` therefore reduces the
+      concurrency of the TFF runtime, which can be useful if client work is very
+      lightweight or models are very large and multiple copies cannot fit in
+      memory.
+
+  Returns:
+    An instance of `executor_factory.ExecutorFactory` encapsulating the
+    executor construction logic specified above.
+
+  Raises:
+    ValueError: If the number of clients is specified and not one or larger.
+  """
+  py_typecheck.check_type(clients_per_thread, int)
+  if num_clients is not None:
+    py_typecheck.check_type(num_clients, int)
+  unplaced_ex_factory = UnplacedExecutorFactory(
+      use_caching=False,
+      can_resolve_references=False,
+  )
+  federating_executor_factory = FederatingExecutorFactory(
+      clients_per_thread=clients_per_thread,
+      unplaced_ex_factory=unplaced_ex_factory,
+      num_clients=num_clients,
+      use_sizing=False)
+
+  return executor_factory.ExecutorFactoryImpl(
+      federating_executor_factory.create_executor)
 
 
 def sizing_executor_factory(
     num_clients: int = None,
     max_fanout: int = 100,
     clients_per_thread: int = 1) -> executor_factory.ExecutorFactory:
-  """Constructs an executor to execute computations on the local machine with sizing.
+  """Constructs an executor factory to execute computations locally with sizing.
 
   Args:
     num_clients: The number of clients. If specified, the executor factory
@@ -395,9 +514,9 @@ def sizing_executor_factory(
       order of `log(num_clients) / log(max_fanout)`.
     clients_per_thread: Integer number of clients for each of TFF's threads to
       run in sequence. Increasing `clients_per_thread` therefore reduces the
-      concurrency of the TFF runtime, which can be useful if client work is
-      very lightweight or models are very large and multiple copies cannot fit
-      in memory.
+      concurrency of the TFF runtime, which can be useful if client work is very
+      lightweight or models are very large and multiple copies cannot fit in
+      memory.
 
   Returns:
     An instance of `executor_factory.ExecutorFactory` encapsulating the
@@ -418,21 +537,25 @@ def sizing_executor_factory(
       unplaced_ex_factory=unplaced_ex_factory,
       num_clients=num_clients,
       use_sizing=True)
+  flat_stack_fn = create_minimal_length_flat_stack_fn(
+      max_fanout, federating_executor_factory)
+  full_stack_factory = ComposingExecutorFactory(
+      max_fanout=max_fanout,
+      unplaced_ex_factory=unplaced_ex_factory,
+      flat_stack_fn=flat_stack_fn)
 
   def _factory_fn(
       cardinalities: executor_factory.CardinalitiesType
   ) -> executor_base.Executor:
-    executor = _create_full_stack(
-        cardinalities,
-        max_fanout,
-        stack_func=federating_executor_factory.create_executor,
-        unplaced_ex_factory=unplaced_ex_factory)
+    executor = full_stack_factory.create_executor(cardinalities)
     sizing_executor_list = federating_executor_factory.sizing_executors
     return executor, sizing_executor_list
 
   return executor_factory.SizingExecutorFactory(_factory_fn)
 
 
+# TODO(b/166634524): Reparameterize to encapsulate remote executor
+# construction.
 def worker_pool_executor_factory(executors,
                                  max_fanout=100
                                 ) -> executor_factory.ExecutorFactory:
@@ -452,17 +575,15 @@ def worker_pool_executor_factory(executors,
     executor construction logic specified above.
   """
   py_typecheck.check_type(executors, list)
-  py_typecheck.check_type(max_fanout, int)
   if not executors:
     raise ValueError('The list executors cannot be empty.')
-  if max_fanout < 2:
-    raise ValueError('Max fanout must be greater than 1.')
   executors = [_wrap_executor_in_threading_stack(e) for e in executors]
+  flat_stack_fn = lambda _: executors
   unplaced_ex_factory = UnplacedExecutorFactory(use_caching=True)
-
-  def _stack_fn(cardinalities):
-    del cardinalities  # Unused
-    return _aggregate_stacks(
-        executors, max_fanout, unplaced_ex_factory=unplaced_ex_factory)
-
-  return executor_factory.ExecutorFactoryImpl(executor_stack_fn=_stack_fn)
+  composing_executor_factory = ComposingExecutorFactory(
+      max_fanout=max_fanout,
+      unplaced_ex_factory=unplaced_ex_factory,
+      flat_stack_fn=flat_stack_fn,
+  )
+  return executor_factory.ExecutorFactoryImpl(
+      executor_stack_fn=composing_executor_factory.create_executor)

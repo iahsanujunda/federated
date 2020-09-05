@@ -27,13 +27,12 @@ from tensorflow_federated.python.core.backends.mapreduce import canonical_form
 from tensorflow_federated.python.core.backends.mapreduce import canonical_form_utils
 from tensorflow_federated.python.core.backends.mapreduce import test_utils
 from tensorflow_federated.python.core.backends.mapreduce import transformations
-from tensorflow_federated.python.core.impl import reference_executor
+from tensorflow_federated.python.core.backends.reference import reference_context
 from tensorflow_federated.python.core.impl.compiler import building_blocks
 from tensorflow_federated.python.core.impl.compiler import intrinsic_defs
 from tensorflow_federated.python.core.impl.compiler import transformation_utils
 from tensorflow_federated.python.core.impl.compiler import tree_analysis
 from tensorflow_federated.python.core.impl.compiler import tree_transformations
-from tensorflow_federated.python.core.impl.context_stack import set_default_context
 from tensorflow_federated.python.core.impl.wrappers import computation_wrapper_instances
 from tensorflow_federated.python.core.templates import iterative_process
 
@@ -806,6 +805,35 @@ class GetCanonicalFormForIterativeProcessTest(CanonicalFormTestCase,
 
     self.assertIsInstance(cf, canonical_form.CanonicalForm)
 
+  # pyformat: disable
+  @parameterized.named_parameters(
+      ('sum_example',
+       get_iterative_process_for_sum_example()),
+      ('sum_example_with_no_prepare',
+       get_iterative_process_for_sum_example_with_no_prepare()),
+      ('sum_example_with_no_broadcast',
+       get_iterative_process_for_sum_example_with_no_broadcast()),
+      ('sum_example_with_no_federated_aggregate',
+       get_iterative_process_for_sum_example_with_no_federated_aggregate()),
+      ('sum_example_with_no_federated_secure_sum',
+       get_iterative_process_for_sum_example_with_no_federated_secure_sum()),
+      ('sum_example_with_no_update',
+       get_iterative_process_for_sum_example_with_no_update()),
+      ('sum_example_with_no_server_state',
+       get_iterative_process_for_sum_example_with_no_server_state()),
+      ('minimal_sum_example',
+       get_iterative_process_for_minimal_sum_example()),
+      ('example_with_unused_lambda_arg',
+       test_utils.get_iterative_process_for_example_with_unused_lambda_arg()),
+      ('example_with_unused_tf_computation_arg',
+       test_utils.get_iterative_process_for_example_with_unused_tf_computation_arg()),
+  )
+  # pyformat: enable
+  def test_returns_canonical_form_with_grappler_disabled(self, ip):
+    cf = canonical_form_utils.get_canonical_form_for_iterative_process(ip, None)
+
+    self.assertIsInstance(cf, canonical_form.CanonicalForm)
+
   def test_raises_value_error_for_sum_example_with_no_aggregation(self):
     ip = get_iterative_process_for_sum_example_with_no_aggregation()
 
@@ -826,6 +854,7 @@ class GetCanonicalFormForIterativeProcessTest(CanonicalFormTestCase,
 
 
 if __name__ == '__main__':
-  reference_executor = reference_executor.ReferenceExecutor()
-  set_default_context.set_default_context(reference_executor)
+  # The reference context is used here because it is currently the only context
+  # which implements the `tff.federated_secure_sum` intrinsic.
+  reference_context.set_reference_context()
   test.main()

@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""The public API for model developers using federated learning algorithms."""
+"""Libraries for using Federated Learning algorithms."""
 
 from tensorflow_federated.python.learning import framework
 from tensorflow_federated.python.learning.federated_averaging import build_federated_averaging_process
@@ -19,7 +19,6 @@ from tensorflow_federated.python.learning.federated_averaging import ClientFedAv
 from tensorflow_federated.python.learning.federated_evaluation import build_federated_evaluation
 from tensorflow_federated.python.learning.federated_sgd import build_federated_sgd_process
 from tensorflow_federated.python.learning.framework.optimizer_utils import state_with_new_model_weights
-from tensorflow_federated.python.learning.keras_utils import assign_weights_to_keras_model
 from tensorflow_federated.python.learning.keras_utils import from_keras_model
 from tensorflow_federated.python.learning.model import BatchOutput
 from tensorflow_federated.python.learning.model import Model

@@ -110,6 +110,8 @@ class ComputationBuildingBlock(typed_object.TypedObject, metaclass=abc.ABCMeta):
     """
     type_signature = computation_types.to_type(type_spec)
     self._type_signature = type_signature
+    self._cached_hash = None
+    self._cached_proto = None
 
   @property
   def type_signature(self) -> computation_types.Type:
@@ -217,9 +219,16 @@ class ComputationBuildingBlock(typed_object.TypedObject, metaclass=abc.ABCMeta):
     """Returns whether or not this block is a `Placement`."""
     return False
 
-  @abc.abstractproperty
+  @property
   def proto(self):
     """Returns a serialized form of this object as a pb.Computation instance."""
+    if self._cached_proto is None:
+      self._cached_proto = self._proto()
+    return self._cached_proto
+
+  @abc.abstractmethod
+  def _proto(self):
+    """Uncached, internal version of `proto`."""
     raise NotImplementedError
 
   # TODO(b/113112885): Add memoization after identifying a suitable externally
@@ -233,6 +242,11 @@ class ComputationBuildingBlock(typed_object.TypedObject, metaclass=abc.ABCMeta):
   def __str__(self):
     """Returns a concise representation of this computation building block."""
     return self.compact_representation()
+
+  def __hash__(self):
+    if self._cached_hash is None:
+      self._cached_hash = hash(self.proto.SerializeToString(deterministic=True))
+    return self._cached_hash
 
 
 class Reference(ComputationBuildingBlock):
@@ -279,8 +293,7 @@ class Reference(ComputationBuildingBlock):
     self._name = name
     self._context = context
 
-  @property
-  def proto(self):
+  def _proto(self):
     return pb.Computation(
         type=type_serialization.serialize_type(self.type_signature),
         reference=pb.Reference(name=self._name))
@@ -363,8 +376,8 @@ class Selection(ComputationBuildingBlock):
       name = str(name)
       if not structure.has_field(source_type, name):
         raise ValueError(
-            'The name \'{}\' does not correspond to any of the names in the '
-            'struct type: {}.'.format(name, structure.name_list(source_type)))
+            f'Error selecting named field `{name}` from type `{source_type}`, '
+            f'whose only named fields are {structure.name_list(source_type)}.')
       type_signature = source_type[name]
     else:
       py_typecheck.check_type(index, int)
@@ -379,8 +392,7 @@ class Selection(ComputationBuildingBlock):
     self._name = name
     self._index = index
 
-  @property
-  def proto(self):
+  def _proto(self):
     if self._name is not None:
       selection = pb.Selection(source=self._source.proto, name=self._name)
     else:
@@ -477,8 +489,7 @@ class Struct(ComputationBuildingBlock, structure.Struct):
     ComputationBuildingBlock.__init__(self, type_signature)
     structure.Struct.__init__(self, elements)
 
-  @property
-  def proto(self):
+  def _proto(self):
     elements = []
     for k, v in structure.iter_elements(self):
       if k is not None:
@@ -568,8 +579,7 @@ class Call(ComputationBuildingBlock):
     self._function = fn
     self._argument = arg
 
-  @property
-  def proto(self):
+  def _proto(self):
     if self._argument is not None:
       call = pb.Call(
           function=self._function.proto, argument=self._argument.proto)
@@ -657,8 +667,7 @@ class Lambda(ComputationBuildingBlock):
     self._parameter_type = parameter_type
     self._result = result
 
-  @property
-  def proto(self) -> pb.Computation:
+  def _proto(self) -> pb.Computation:
     type_signature = type_serialization.serialize_type(self.type_signature)
     fn = pb.Lambda(
         parameter_name=self._parameter_name, result=self._result.proto)
@@ -776,8 +785,7 @@ class Block(ComputationBuildingBlock):
     self._locals = updated_locals
     self._result = result
 
-  @property
-  def proto(self) -> pb.Computation:
+  def _proto(self) -> pb.Computation:
     return pb.Computation(
         type=type_serialization.serialize_type(self.type_signature),
         block=pb.Block(
@@ -841,17 +849,12 @@ class Intrinsic(ComputationBuildingBlock):
     intrinsic_def = intrinsic_defs.uri_to_intrinsic_def(uri)
     if intrinsic_def is not None:
       # Note: this is really expensive.
-      if not type_analysis.is_concrete_instance_of(
-          type_signature, intrinsic_def.type_signature):
-        raise TypeError('Tried to construct an Intrinsic with bad type '
-                        'signature; Intrinsic {} expects type signature {}, '
-                        'and you tried to construct one of type {}.'.format(
-                            uri, intrinsic_def.type_signature, type_signature))
+      type_analysis.check_concrete_instance_of(type_signature,
+                                               intrinsic_def.type_signature)
     super().__init__(type_signature)
     self._uri = uri
 
-  @property
-  def proto(self) -> pb.Computation:
+  def _proto(self) -> pb.Computation:
     return pb.Computation(
         type=type_serialization.serialize_type(self.type_signature),
         intrinsic=pb.Intrinsic(uri=self._uri))
@@ -906,8 +909,7 @@ class Data(ComputationBuildingBlock):
     super().__init__(type_spec)
     self._uri = uri
 
-  @property
-  def proto(self) -> pb.Computation:
+  def _proto(self) -> pb.Computation:
     return pb.Computation(
         type=type_serialization.serialize_type(self.type_signature),
         data=pb.Data(uri=self._uri))
@@ -957,15 +959,15 @@ class CompiledComputation(ComputationBuildingBlock):
       type_signature = type_serialization.deserialize_type(proto.type)
     py_typecheck.check_type(type_signature, computation_types.Type)
     super().__init__(type_signature)
-    self._proto = proto
+    self._proto_representation = proto
     if name is not None:
       self._name = name
     else:
-      self._name = '{:x}'.format(zlib.adler32(self._proto.SerializeToString()))
+      self._name = '{:x}'.format(
+          zlib.adler32(self._proto_representation.SerializeToString()))
 
-  @property
-  def proto(self) -> pb.Computation:
-    return self._proto
+  def _proto(self) -> pb.Computation:
+    return self._proto_representation
 
   def is_compiled_computation(self):
     return True
@@ -1008,8 +1010,7 @@ class Placement(ComputationBuildingBlock):
     super().__init__(computation_types.PlacementType())
     self._literal = literal
 
-  @property
-  def proto(self) -> pb.Computation:
+  def _proto(self) -> pb.Computation:
     return pb.Computation(
         type=type_serialization.serialize_type(self.type_signature),
         placement=pb.Placement(uri=self._literal.uri))

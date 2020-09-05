@@ -68,6 +68,10 @@ def _create_concurrent_maxthread_tuples():
     ex_factory = executor_stacks.sizing_executor_factory(
         clients_per_thread=concurrency)
     tuples.append((sizing_ex_string, ex_factory, concurrency))
+    debug_ex_string = 'debug_executor_{}_client_thread'.format(concurrency)
+    ex_factory = executor_stacks.thread_debugging_executor_factory(
+        clients_per_thread=concurrency)
+    tuples.append((debug_ex_string, ex_factory, concurrency))
   return tuples
 
 
@@ -94,6 +98,7 @@ class ExecutorStacksTest(parameterized.TestCase):
   @parameterized.named_parameters(
       ('local_executor', executor_stacks.local_executor_factory),
       ('sizing_executor', executor_stacks.sizing_executor_factory),
+      ('debug_executor', executor_stacks.thread_debugging_executor_factory),
   )
   def test_construction_with_no_args(self, executor_factory_fn):
     executor_factory_impl = executor_factory_fn()
@@ -153,10 +158,14 @@ class ExecutorStacksTest(parameterized.TestCase):
       ('local_executor_none_clients', executor_stacks.local_executor_factory()),
       ('sizing_executor_none_clients',
        executor_stacks.sizing_executor_factory()),
+      ('debug_executor_none_clients',
+       executor_stacks.thread_debugging_executor_factory()),
       ('local_executor_one_client',
        executor_stacks.local_executor_factory(num_clients=1)),
       ('sizing_executor_one_client',
        executor_stacks.sizing_executor_factory(num_clients=1)),
+      ('debug_executor_one_client',
+       executor_stacks.thread_debugging_executor_factory(num_clients=1)),
   )
   def test_execution_of_tensorflow(self, executor):
 
@@ -181,9 +190,19 @@ class ExecutorStacksTest(parameterized.TestCase):
     # One for server, one for `None`-placed, concurrency_level for clients.
     self.assertLen(args_list, concurrency_level + 2)
 
+  @mock.patch(
+      'tensorflow_federated.python.core.impl.executors.reference_resolving_executor.ReferenceResolvingExecutor',
+      return_value=ExecutorMock())
+  def test_thread_debugging_executor_constructs_exactly_one_reference_resolving_executor(
+      self, executor_mock):
+    executor_stacks.thread_debugging_executor_factory().create_executor(
+        {placement_literals.CLIENTS: 10})
+    executor_mock.assert_called_once()
+
   @parameterized.named_parameters(
       ('local_executor', executor_stacks.local_executor_factory),
       ('sizing_executor', executor_stacks.sizing_executor_factory),
+      ('debug_executor', executor_stacks.thread_debugging_executor_factory),
   )
   def test_create_executor_raises_with_wrong_cardinalities(
       self, executor_factory_fn):
@@ -330,6 +349,132 @@ class FederatingExecutorFactoryTest(absltest.TestCase):
     with self.assertRaisesRegex(ValueError, 'configured to return 3 clients'):
       federating_factory.create_executor(
           cardinalities={placement_literals.CLIENTS: 5})
+
+
+class MinimalLengthFlatStackFnTest(parameterized.TestCase):
+
+  def test_callable_raises_negative_clients(self):
+    unplaced_factory = executor_stacks.UnplacedExecutorFactory(use_caching=True)
+    federating_factory = executor_stacks.FederatingExecutorFactory(
+        clients_per_thread=1, unplaced_ex_factory=unplaced_factory)
+    flat_stack_fn = executor_stacks.create_minimal_length_flat_stack_fn(
+        2, federating_factory)
+    with self.assertRaises(ValueError):
+      flat_stack_fn({placement_literals.CLIENTS: -1})
+
+  def test_returns_singleton_list_for_zero_clients(self):
+    unplaced_factory = executor_stacks.UnplacedExecutorFactory(use_caching=True)
+    federating_factory = executor_stacks.FederatingExecutorFactory(
+        clients_per_thread=1, unplaced_ex_factory=unplaced_factory)
+    flat_stack_fn = executor_stacks.create_minimal_length_flat_stack_fn(
+        3, federating_factory)
+    executor_list = flat_stack_fn({placement_literals.CLIENTS: 0})
+    self.assertLen(executor_list, 1)
+
+  @parameterized.named_parameters(
+      ('max_3_clients_3_clients', 3, 3),
+      ('max_3_clients_10_clients', 3, 10),
+  )
+  def test_constructs_correct_length_list(self, max_clients_per_stack,
+                                          num_clients):
+    unplaced_factory = executor_stacks.UnplacedExecutorFactory(use_caching=True)
+    federating_factory = executor_stacks.FederatingExecutorFactory(
+        clients_per_thread=1, unplaced_ex_factory=unplaced_factory)
+    flat_stack_fn = executor_stacks.create_minimal_length_flat_stack_fn(
+        max_clients_per_stack, federating_factory)
+    executor_list = flat_stack_fn({placement_literals.CLIENTS: num_clients})
+    self.assertLen(executor_list,
+                   math.ceil(num_clients / max_clients_per_stack))
+
+
+class ComposingExecutorFactoryTest(absltest.TestCase):
+
+  def test_constructs_executor_factory_with_federated_factory(self):
+    unplaced_factory = executor_stacks.UnplacedExecutorFactory(use_caching=True)
+    federating_factory = executor_stacks.FederatingExecutorFactory(
+        clients_per_thread=1, unplaced_ex_factory=unplaced_factory)
+    flat_stack_fn = executor_stacks.create_minimal_length_flat_stack_fn(
+        2, federating_factory)
+    composing_ex_factory = executor_stacks.ComposingExecutorFactory(
+        max_fanout=2,
+        unplaced_ex_factory=unplaced_factory,
+        flat_stack_fn=flat_stack_fn)
+    self.assertIsInstance(composing_ex_factory,
+                          executor_factory.ExecutorFactory)
+
+  def test_constructs_executor_factory_with_child_executors(self):
+    unplaced_factory = executor_stacks.UnplacedExecutorFactory(use_caching=True)
+    child_executors = [unplaced_factory.create_executor() for _ in range(5)]
+    flat_stack_fn = lambda _: child_executors
+    composing_ex_factory = executor_stacks.ComposingExecutorFactory(
+        max_fanout=2,
+        unplaced_ex_factory=unplaced_factory,
+        flat_stack_fn=flat_stack_fn,
+    )
+    self.assertIsInstance(composing_ex_factory,
+                          executor_factory.ExecutorFactory)
+
+  def test_construction_raises_with_max_fanout_one(self):
+    unplaced_factory = executor_stacks.UnplacedExecutorFactory(use_caching=True)
+    federating_factory = executor_stacks.FederatingExecutorFactory(
+        clients_per_thread=1, unplaced_ex_factory=unplaced_factory)
+    flat_stack_fn = executor_stacks.create_minimal_length_flat_stack_fn(
+        2, federating_factory)
+    with self.assertRaises(ValueError):
+      executor_stacks.ComposingExecutorFactory(
+          max_fanout=1,
+          unplaced_ex_factory=unplaced_factory,
+          flat_stack_fn=flat_stack_fn)
+
+  def test_creates_executor_with_large_fanout(self):
+    unplaced_factory = executor_stacks.UnplacedExecutorFactory(use_caching=True)
+    federating_factory = executor_stacks.FederatingExecutorFactory(
+        clients_per_thread=1, unplaced_ex_factory=unplaced_factory)
+    flat_stack_fn = executor_stacks.create_minimal_length_flat_stack_fn(
+        2, federating_factory)
+    composing_ex_factory = executor_stacks.ComposingExecutorFactory(
+        max_fanout=200,
+        unplaced_ex_factory=unplaced_factory,
+        flat_stack_fn=flat_stack_fn)
+    ex = composing_ex_factory.create_executor({placement_literals.CLIENTS: 10})
+    self.assertIsInstance(ex, executor_base.Executor)
+
+  def test_creates_executor_with_small_fanout(self):
+    unplaced_factory = executor_stacks.UnplacedExecutorFactory(use_caching=True)
+    federating_factory = executor_stacks.FederatingExecutorFactory(
+        clients_per_thread=1, unplaced_ex_factory=unplaced_factory)
+    flat_stack_fn = executor_stacks.create_minimal_length_flat_stack_fn(
+        2, federating_factory)
+    composing_ex_factory = executor_stacks.ComposingExecutorFactory(
+        max_fanout=2,
+        unplaced_ex_factory=unplaced_factory,
+        flat_stack_fn=flat_stack_fn)
+    ex = composing_ex_factory.create_executor({placement_literals.CLIENTS: 10})
+    self.assertIsInstance(ex, executor_base.Executor)
+
+  @mock.patch(
+      'tensorflow_federated.python.core.impl.executors.federated_composing_strategy.FederatedComposingStrategy.factory',
+      return_value=ExecutorMock())
+  def test_executor_with_small_fanout_calls_correct_number_of_composing_strategies(
+      self, composing_strategy_mock):
+    num_clients = 10
+    max_fanout = 2
+    clients_per_thread = 1
+    unplaced_factory = executor_stacks.UnplacedExecutorFactory(use_caching=True)
+    federating_factory = executor_stacks.FederatingExecutorFactory(
+        clients_per_thread=clients_per_thread,
+        unplaced_ex_factory=unplaced_factory)
+    flat_stack_fn = executor_stacks.create_minimal_length_flat_stack_fn(
+        2, federating_factory)
+    composing_ex_factory = executor_stacks.ComposingExecutorFactory(
+        max_fanout=max_fanout,
+        unplaced_ex_factory=unplaced_factory,
+        flat_stack_fn=flat_stack_fn)
+    composing_ex_factory.create_executor(
+        {placement_literals.CLIENTS: num_clients})
+    args_list = composing_strategy_mock.call_args_list
+    # 5 at the first layer, 1 at the second
+    self.assertLen(args_list, 6)
 
 
 if __name__ == '__main__':

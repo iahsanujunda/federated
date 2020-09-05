@@ -65,9 +65,9 @@ divide-and-conquer.
 import collections
 
 from absl import logging
-import tensorflow as tf
 
 from tensorflow_federated.python.common_libs import py_typecheck
+from tensorflow_federated.python.common_libs import structure
 from tensorflow_federated.python.core.api import computation_types
 from tensorflow_federated.python.core.impl.compiler import building_block_analysis
 from tensorflow_federated.python.core.impl.compiler import building_block_factory
@@ -123,7 +123,7 @@ def check_extraction_result(before_extraction, extracted):
             before_extraction.type_signature, extracted.type_signature))
 
 
-def consolidate_and_extract_local_processing(comp):
+def consolidate_and_extract_local_processing(comp, grappler_config_proto):
   """Consolidates all the local processing in `comp`.
 
   The input computation `comp` must have the following properties:
@@ -212,6 +212,9 @@ def consolidate_and_extract_local_processing(comp):
   Args:
     comp: An instance of `building_blocks.ComputationBuildingBlock` that serves
       as the input to this transformation, as described above.
+    grappler_config_proto: An instance of `tf.compat.v1.ConfigProto` to
+      configure Grappler graph optimization of the generated TensorFlow graph.
+      If `None`, Grappler is bypassed.
 
   Returns:
     An instance of `building_blocks.CompiledComputation` that holds the
@@ -238,18 +241,19 @@ def consolidate_and_extract_local_processing(comp):
       # `federated_apply/map`.
       if unwrapped.function.uri in (intrinsic_defs.FEDERATED_APPLY.uri,
                                     intrinsic_defs.FEDERATED_MAP.uri):
-        extracted = parse_tff_to_tf(unwrapped.argument[0])
+        extracted = parse_tff_to_tf(unwrapped.argument[0],
+                                    grappler_config_proto)
         check_extraction_result(unwrapped.argument[0], extracted)
         return extracted
       else:
         member_type = None if comp.parameter_type is None else comp.parameter_type.member
         rebound = building_blocks.Lambda(comp.parameter_name, member_type,
                                          unwrapped.argument)
-        extracted = parse_tff_to_tf(rebound)
+        extracted = parse_tff_to_tf(rebound, grappler_config_proto)
         check_extraction_result(rebound, extracted)
         return extracted
     else:
-      extracted = parse_tff_to_tf(comp)
+      extracted = parse_tff_to_tf(comp, grappler_config_proto)
       check_extraction_result(comp, extracted)
       return extracted
   elif comp.type_signature.is_federated():
@@ -258,20 +262,20 @@ def consolidate_and_extract_local_processing(comp):
     # `federated_apply/map`.
     if unwrapped.function.uri in (intrinsic_defs.FEDERATED_APPLY.uri,
                                   intrinsic_defs.FEDERATED_MAP.uri):
-      extracted = parse_tff_to_tf(unwrapped.argument[0])
+      extracted = parse_tff_to_tf(unwrapped.argument[0], grappler_config_proto)
       check_extraction_result(unwrapped.argument[0], extracted)
       return extracted
     else:
-      extracted = parse_tff_to_tf(unwrapped.argument)
+      extracted = parse_tff_to_tf(unwrapped.argument, grappler_config_proto)
       check_extraction_result(unwrapped.argument, extracted)
       return extracted.function
   else:
-    called_tf = parse_tff_to_tf(comp)
+    called_tf = parse_tff_to_tf(comp, grappler_config_proto)
     check_extraction_result(comp, called_tf)
     return called_tf.function
 
 
-def parse_tff_to_tf(comp):
+def parse_tff_to_tf(comp, grappler_config_proto):
   """Parses TFF construct `comp` into TensorFlow construct.
 
   Does not change the type signature of `comp`. Therefore may return either
@@ -281,6 +285,9 @@ def parse_tff_to_tf(comp):
   Args:
     comp: Instance of `building_blocks.ComputationBuildingBlock` to parse down
       to a single TF block.
+    grappler_config_proto: An instance of `tf.compat.v1.ConfigProto` to
+      configure Grappler graph optimization of the generated TensorFlow graph.
+      If `None`, Grappler is bypassed.
 
   Returns:
     The result of parsing TFF to TF. If successful, this is either a single
@@ -291,28 +298,12 @@ def parse_tff_to_tf(comp):
   """
   tf_parsed, _ = transformations.compile_local_computation_to_tensorflow(comp)
 
-  # TODO(b/154352798): We copy TF's RewriterConfig toggle enum values as it
-  # is not exposed. There is ongoing discussion with TF API owners on exposing
-  # the ability to call into Grappler offline; follow up here when we land on
-  # something.
-  logging.info('Using Grappler on `CanonicalForm` TensorFlow graphs.')
-  off = 2
-  aggressive = 3
+  if grappler_config_proto is not None:
+    logging.info('Using Grappler on `CanonicalForm` TensorFlow graphs.')
+    tf_parsed, _ = transformations.optimize_tensorflow_graphs(
+        tf_parsed, grappler_config_proto)
 
-  grappler_config_proto = tf.compat.v1.ConfigProto()
-
-  # TODO(b/155127458): Enable function optimization when possible.
-  grappler_config_proto.graph_options.rewrite_options.function_optimization = off
-
-  grappler_config_proto.graph_options.rewrite_options.memory_optimization = aggressive
-  grappler_config_proto.graph_options.rewrite_options.constant_folding = aggressive
-  grappler_config_proto.graph_options.rewrite_options.arithmetic_optimization = aggressive
-  grappler_config_proto.graph_options.rewrite_options.loop_optimization = aggressive
-
-  optimized_tf, _ = transformations.optimize_tensorflow_graphs(
-      tf_parsed, grappler_config_proto)
-
-  return optimized_tf
+  return tf_parsed
 
 
 def force_align_and_split_by_intrinsics(comp, uri):
@@ -959,22 +950,25 @@ def bind_single_selection_as_argument_to_lower_level_lambda(comp, index):
   new_name = next(name_generator)
   new_ref = building_blocks.Reference(new_name,
                                       comp.type_signature.parameter[index])
+  elem_name_iterator = enumerate(structure.iter_elements(comp.parameter_type))
+  # We keep our own name to index map to handle potentially unnamed fields.
+  old_ref_name_to_index = {
+      name: idx for idx, (name, _) in elem_name_iterator if name is not None
+  }
+
+  def _is_correct_selection(sel):
+    # Only a single possible index here, no need to parameterize.
+    if sel.index is not None:
+      return sel.index == index
+    else:
+      return old_ref_name_to_index.get(sel.name) == index
 
   def _remove_selection_from_ref(inner_comp):
     """Pattern-matches selection from references."""
     if (inner_comp.is_selection() and inner_comp.source.is_reference() and
-        inner_comp.index == index and inner_comp.source.name == parameter_name):
+        _is_correct_selection(inner_comp) and
+        inner_comp.source.name == parameter_name):
       return new_ref, True
-    elif (inner_comp.is_call() and
-          inner_comp.function.is_compiled_computation() and
-          inner_comp.argument is not None and
-          inner_comp.argument.is_reference() and
-          inner_comp.argument.name == parameter_name):
-      raise ValueError('Encountered called graph on reference pattern in TFF '
-                       'AST; this means relying on pattern-matching when '
-                       'rebinding arguments may be insufficient. Ensure that '
-                       'arguments are rebound before decorating references '
-                       'with called identity graphs.')
     return inner_comp, False
 
   references_rebound_in_result, _ = transformation_utils.transform_postorder(
@@ -1039,6 +1033,8 @@ def zip_selection_as_argument_to_lower_level_lambda(comp, selected_index_lists):
     ValueError: If a called graph with reference argument is detected in
       `comp`.
   """
+  # TODO(b/165022229): This code has been tagged for a long time as potentially
+  # brittle, and it is difficult to read. Refactor this function for clarity.
   py_typecheck.check_type(comp, building_blocks.Lambda)
   py_typecheck.check_type(selected_index_lists, list)
   for selection_list in selected_index_lists:
@@ -1053,6 +1049,15 @@ def zip_selection_as_argument_to_lower_level_lambda(comp, selected_index_lists):
   top_level_parameter_name = comp.parameter_name
   top_level_parameter_reference = building_blocks.Reference(
       top_level_parameter_name, comp.parameter_type)
+
+  def _is_correct_selection(sel, index, type_spec):
+    if sel.index is not None:
+      return sel.index == index
+    else:
+      for idx, (name, _) in enumerate(structure.iter_elements(type_spec)):
+        if name == sel.name:
+          return idx == index
+    return False
 
   type_list = []
   for selection_list in selected_index_lists:
@@ -1120,8 +1125,9 @@ def zip_selection_as_argument_to_lower_level_lambda(comp, selected_index_lists):
     for idx, tup in enumerate(selected_index_lists):
       selection = inner_comp  # Empty selection
       tuple_pattern_matched = True
-      for selected_index in tup[::-1]:
-        if selection.is_selection() and selection.index == selected_index:
+      for index in tup[::-1]:
+        if selection.is_selection() and _is_correct_selection(
+            selection, index, selection.source.type_signature):
           selection = selection.source
         else:
           tuple_pattern_matched = False

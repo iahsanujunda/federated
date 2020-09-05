@@ -26,47 +26,6 @@ from tensorflow_federated.python.core.impl.types import type_factory
 from tensorflow_federated.python.core.impl.types import type_serialization
 
 
-class CreateBroadcastScalarToShapeTest(parameterized.TestCase):
-
-  @parameterized.named_parameters(
-      ('int_empty_shape', tf.int32, tf.TensorShape([]), 10, 10),
-      ('int', tf.int32, tf.TensorShape([3]), 10, [10, 10, 10]),
-      ('float', tf.float32, tf.TensorShape([3]), 10.0, [10.0, 10.0, 10.0]),
-  )
-  def test_returns_computation(self, type_signature, shape, value,
-                               expected_result):
-    proto = tensorflow_computation_factory.create_broadcast_scalar_to_shape(
-        type_signature, shape)
-
-    self.assertIsInstance(proto, pb.Computation)
-    actual_type = type_serialization.deserialize_type(proto.type)
-    result_type = computation_types.TensorType(type_signature, shape=shape)
-    expected_type = computation_types.FunctionType(type_signature, result_type)
-    self.assertEqual(actual_type, expected_type)
-    actual_result = test_utils.run_tensorflow(proto, value)
-    if isinstance(expected_result, list):
-      self.assertCountEqual(actual_result, expected_result)
-    else:
-      self.assertEqual(actual_result, expected_result)
-
-  @parameterized.named_parameters(
-      ('int_type', int, tf.TensorShape([])),
-      ('list_shape', tf.int32, [1, 1]),
-  )
-  def test_raises_type_error(self, type_signature, shape):
-    with self.assertRaises(TypeError):
-      tensorflow_computation_factory.create_broadcast_scalar_to_shape(
-          type_signature, shape)
-
-  def test_raises_value_error_with_partially_defined_shape(self):
-    type_signature = tf.int32
-    shape = tf.TensorShape([None, 1])
-
-    with self.assertRaises(ValueError):
-      tensorflow_computation_factory.create_broadcast_scalar_to_shape(
-          type_signature, shape)
-
-
 class CreateConstantTest(parameterized.TestCase):
 
   # pyformat: disable
@@ -91,7 +50,7 @@ class CreateConstantTest(parameterized.TestCase):
   )
   # pyformat: enable
   def test_returns_computation(self, value, type_signature, expected_result):
-    proto = tensorflow_computation_factory.create_constant(
+    proto, _ = tensorflow_computation_factory.create_constant(
         value, type_signature)
 
     self.assertIsInstance(proto, pb.Computation)
@@ -153,7 +112,7 @@ class CreateBinaryOperatorTest(parameterized.TestCase):
   # pyformat: enable
   def test_returns_computation(self, operator, type_signature, operands,
                                expected_result):
-    proto = tensorflow_computation_factory.create_binary_operator(
+    proto, _ = tensorflow_computation_factory.create_binary_operator(
         operator, type_signature)
 
     self.assertIsInstance(proto, pb.Computation)
@@ -249,7 +208,7 @@ class CreateBinaryOperatorWithUpcastTest(parameterized.TestCase):
   # pyformat: enable
   def test_returns_computation(self, operator, type_signature, operands,
                                expected_result):
-    proto = tensorflow_computation_factory.create_binary_operator_with_upcast(
+    proto, _ = tensorflow_computation_factory.create_binary_operator_with_upcast(
         type_signature, operator)
 
     self.assertIsInstance(proto, pb.Computation)
@@ -267,7 +226,7 @@ class CreateBinaryOperatorWithUpcastTest(parameterized.TestCase):
 class CreateEmptyTupleTest(absltest.TestCase):
 
   def test_returns_computation(self):
-    proto = tensorflow_computation_factory.create_empty_tuple()
+    proto, _ = tensorflow_computation_factory.create_empty_tuple()
 
     self.assertIsInstance(proto, pb.Computation)
     actual_type = type_serialization.deserialize_type(proto.type)
@@ -293,7 +252,7 @@ class CreateIdentityTest(parameterized.TestCase):
   )
   # pyformat: enable
   def test_returns_computation(self, type_signature, value):
-    proto = tensorflow_computation_factory.create_identity(type_signature)
+    proto, _ = tensorflow_computation_factory.create_identity(type_signature)
 
     self.assertIsInstance(proto, pb.Computation)
     actual_type = type_serialization.deserialize_type(proto.type)
@@ -325,7 +284,7 @@ class CreateReplicateInputTest(parameterized.TestCase):
       ('sequence', computation_types.SequenceType(tf.int32), 3, [10] * 3),
   )
   def test_returns_computation(self, type_signature, count, value):
-    proto = tensorflow_computation_factory.create_replicate_input(
+    proto, _ = tensorflow_computation_factory.create_replicate_input(
         type_signature, count)
 
     self.assertIsInstance(proto, pb.Computation)
@@ -363,7 +322,7 @@ class CreateComputationForPyFnTest(parameterized.TestCase):
   # pyformat: enable
   def test_returns_computation(self, py_fn, type_signature, arg,
                                expected_result):
-    proto = tensorflow_computation_factory.create_computation_for_py_fn(
+    proto, _ = tensorflow_computation_factory.create_computation_for_py_fn(
         py_fn, type_signature)
 
     self.assertIsInstance(proto, pb.Computation)

@@ -34,8 +34,6 @@ from tensorflow_federated.python.core.impl.types import type_serialization
 # TODO(b/140752097): Factor out more commonalities between executorts to place
 # in this helper file. The helpers that are currently here may not be the right
 # ones. Exploit commonalities with transformations.
-# TODO(b/134543154): Add a dedicated test for this library (not a priority since
-# it's already transitively getting covered by existing executor tests).
 async def delegate_entirely_to_executor(arg, arg_type, executor):
   """Delegates `arg` in its entirety to the target executor.
 
@@ -114,8 +112,8 @@ async def embed_tf_scalar_constant(executor, type_spec, value):
     An instance of `tff.framework.ExecutorValue` containing an embedded value.
   """
   py_typecheck.check_type(executor, executor_base.Executor)
-  proto = tensorflow_computation_factory.create_constant(value, type_spec)
-  type_signature = type_serialization.deserialize_type(proto.type)
+  proto, type_signature = tensorflow_computation_factory.create_constant(
+      value, type_spec)
   result = await executor.create_value(proto, type_signature)
   return await executor.create_call(result)
 
@@ -134,8 +132,8 @@ async def embed_tf_binary_operator(executor, type_spec, op):
     An instance of `tff.framework.ExecutorValue` representing the operator in
     a form embedded into the executor.
   """
-  proto = tensorflow_computation_factory.create_binary_operator(op, type_spec)
-  type_signature = type_serialization.deserialize_type(proto.type)
+  proto, type_signature = tensorflow_computation_factory.create_binary_operator(
+      op, type_spec)
   return await executor.create_value(proto, type_signature)
 
 

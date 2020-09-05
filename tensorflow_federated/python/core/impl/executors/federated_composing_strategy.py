@@ -194,35 +194,25 @@ class FederatedComposingStrategy(federating_executor.FederatingStrategy):
       clients located in the corresponding child executor.
     """
 
-    # This helper function and the logic to cache the `_cardinalities_task` is
-    # is required because `functools.lru_cache` is not compatible with async
-    # coroutines. See https://bugs.python.org/issue35040 for more information.
-    async def _get_cardinalities_helper():
+    async def _num_clients(executor):
+      """Returns the number of clients for the given `executor`."""
+      intrinsic_type = computation_types.FunctionType(
+          type_factory.at_clients(tf.int32), type_factory.at_server(tf.int32))
+      intrinsic = executor_utils.create_intrinsic_comp(
+          intrinsic_defs.FEDERATED_SUM, intrinsic_type)
+      arg_type = type_factory.at_clients(tf.int32, all_equal=True)
+      fn, arg = await asyncio.gather(
+          executor.create_value(intrinsic, intrinsic_type),
+          executor.create_value(1, arg_type))
+      call = await executor.create_call(fn, arg)
+      result = await call.compute()
+      if isinstance(result, tf.Tensor):
+        return result.numpy()
+      else:
+        return result
 
-      async def _num_clients(executor):
-        """Returns the number of clients for the given `executor`."""
-        intrinsic_type = computation_types.FunctionType(
-            type_factory.at_clients(tf.int32), type_factory.at_server(tf.int32))
-        intrinsic = executor_utils.create_intrinsic_comp(
-            intrinsic_defs.FEDERATED_SUM, intrinsic_type)
-        arg_type = type_factory.at_clients(tf.int32, all_equal=True)
-        fn, arg = await asyncio.gather(
-            executor.create_value(intrinsic, intrinsic_type),
-            executor.create_value(1, arg_type))
-        call = await executor.create_call(fn, arg)
-        result = await call.compute()
-        if isinstance(result, tf.Tensor):
-          return result.numpy()
-        else:
-          return result
-
-      return await asyncio.gather(
-          *[_num_clients(c) for c in self._target_executors])
-
-    if self._cardinalities_task is None:
-      self._cardinalities_task = asyncio.ensure_future(
-          _get_cardinalities_helper())
-    return await self._cardinalities_task
+    return await asyncio.gather(
+        *[_num_clients(c) for c in self._target_executors])
 
   async def compute_federated_value(
       self, value: Any, type_signature: computation_types.Type
@@ -272,8 +262,8 @@ class FederatedComposingStrategy(federating_executor.FederatingStrategy):
     val = arg.internal_representation[0]
     py_typecheck.check_type(val, list)
     py_typecheck.check_len(val, len(self._target_executors))
-    identity_report = tensorflow_computation_factory.create_identity(zero_type)
-    identity_report_type = type_factory.unary_op(zero_type)
+    identity_report, identity_report_type = tensorflow_computation_factory.create_identity(
+        zero_type)
     aggr_type = computation_types.FunctionType(
         computation_types.StructType([
             value_type, zero_type, accumulate_type, merge_type,
@@ -487,16 +477,15 @@ class FederatedComposingStrategy(federating_executor.FederatingStrategy):
       arg: FederatedComposingStrategyValue) -> FederatedComposingStrategyValue:
     type_analysis.check_federated_type(
         arg.type_signature, placement=placement_literals.CLIENTS)
+    id_comp, id_type = tensorflow_computation_factory.create_identity(
+        arg.type_signature.member)
     zero, plus, identity = await asyncio.gather(
         executor_utils.embed_tf_scalar_constant(self._executor,
                                                 arg.type_signature.member, 0),
         executor_utils.embed_tf_binary_operator(self._executor,
                                                 arg.type_signature.member,
                                                 tf.add),
-        self._executor.create_value(
-            tensorflow_computation_factory.create_identity(
-                arg.type_signature.member),
-            type_factory.unary_op(arg.type_signature.member)))
+        self._executor.create_value(id_comp, id_type))
     aggregate_args = await self._executor.create_struct(
         [arg, zero, plus, plus, identity])
     return await self.compute_federated_aggregate(aggregate_args)

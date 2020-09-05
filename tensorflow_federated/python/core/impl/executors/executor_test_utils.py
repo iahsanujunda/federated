@@ -14,7 +14,6 @@
 """Utils for testing executors."""
 
 import asyncio
-import functools
 
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -25,11 +24,9 @@ from tensorflow_federated.python.common_libs import py_typecheck
 from tensorflow_federated.python.common_libs import serialization_utils
 from tensorflow_federated.python.common_libs import structure
 from tensorflow_federated.python.core.api import computation_types
-from tensorflow_federated.python.core.impl import reference_executor
 from tensorflow_federated.python.core.impl.compiler import computation_factory
 from tensorflow_federated.python.core.impl.compiler import intrinsic_defs
 from tensorflow_federated.python.core.impl.compiler import tensorflow_computation_factory
-from tensorflow_federated.python.core.impl.context_stack import context_base
 from tensorflow_federated.python.core.impl.context_stack import context_stack_impl
 from tensorflow_federated.python.core.impl.executors import execution_context
 from tensorflow_federated.python.core.impl.executors import executor_base
@@ -52,24 +49,24 @@ def executors(*args):
   Note: To use this decorator your test is required to inherit from
   `parameterized.TestCase`.
 
-  1.  The decorator can be specified without arguments:
+  The decorator can be called without arguments:
 
-      ```
-      @executors
-      def foo(self):
-        ...
-      ```
+  ```
+  @executors
+  def foo(self):
+    ...
+  ```
 
-  2.  The decorator can be called with arguments:
+  or with arguments:
 
-      ```
-      @executors(
-          ('label', executor),
-          ...
-      )
-      def foo(self):
-        ...
-      ```
+  ```
+  @executors(
+      ('label', executor),
+      ...
+  )
+  def foo(self):
+    ...
+  ```
 
   If the decorator is specified without arguments or is called with no
   arguments, the default this decorator with parameterize the test by the
@@ -89,42 +86,26 @@ def executors(*args):
      A test generator to be handled by `parameterized.TestGeneratorMetaclass`.
   """
 
-  def executor_decorator(fn):
-    """Create a wrapped function with custom execution contexts."""
+  def decorator(fn, *named_executors):
+    if not named_executors:
+      named_executors = [
+          ('local', executor_stacks.local_executor_factory()),
+          ('sizing', executor_stacks.sizing_executor_factory()),
+      ]
 
+    @parameterized.named_parameters(*named_executors)
     def wrapped_fn(self, executor):
       """Install a particular execution context before running `fn`."""
-      # Executors inheriting from `executor_base.Executor` will need to be
-      # wrapped in an execution context. The `ReferenceExecutor` is special and
-      # inherits from `context_base.Context`, so we don't wrap.
-      if not isinstance(executor, context_base.Context):
-        context = execution_context.ExecutionContext(executor)
-      else:
-        context = executor
+      context = execution_context.ExecutionContext(executor)
       with context_stack_impl.context_stack.install(context):
         fn(self)
 
     return wrapped_fn
 
-  def decorator(fn, *named_executors):
-    """Construct a custom `parameterized.named_parameter` decorator for `fn`."""
-    wraps_decorator = functools.wraps(fn)
-    if not named_executors:
-      named_executors = [
-          ('reference', reference_executor.ReferenceExecutor()),
-          ('local', executor_stacks.local_executor_factory()),
-      ]
-    named_parameters_decorator = parameterized.named_parameters(
-        *named_executors)
-    fn = executor_decorator(fn)
-    fn = named_parameters_decorator(fn)
-    fn = wraps_decorator(fn)
-    return fn
-
   if len(args) == 1 and callable(args[0]):
     return decorator(args[0])
   else:
-    return lambda x: decorator(x, *args)
+    return lambda fn: decorator(fn, *args)
 
 
 class AsyncTestCase(absltest.TestCase):
@@ -513,23 +494,22 @@ def create_dummy_computation_tensorflow_constant():
   """Returns a tensorflow computation and type `( -> float32)`."""
   value = 10.0
   tensor_type = computation_types.TensorType(tf.float32)
-  value = tensorflow_computation_factory.create_constant(value, tensor_type)
-  type_signature = computation_types.FunctionType(None, tensor_type)
+  value, type_signature = tensorflow_computation_factory.create_constant(
+      value, tensor_type)
   return value, type_signature
 
 
 def create_dummy_computation_tensorflow_empty():
   """Returns a tensorflow computation and type `( -> <>)`."""
-  value = tensorflow_computation_factory.create_empty_tuple()
-  type_signature = computation_types.FunctionType(None, [])
+  value, type_signature = tensorflow_computation_factory.create_empty_tuple()
   return value, type_signature
 
 
 def create_dummy_computation_tensorflow_identity():
   """Returns a tensorflow computation and type `(float32 -> float32)`."""
   tensor_type = computation_types.TensorType(tf.float32)
-  value = tensorflow_computation_factory.create_identity(tensor_type)
-  type_signature = computation_types.FunctionType(tensor_type, tensor_type)
+  value, type_signature = tensorflow_computation_factory.create_identity(
+      tensor_type)
   return value, type_signature
 
 

@@ -14,7 +14,7 @@
 """Libraries to prepare Shakespeare datasets for CharRNN experiments."""
 
 import functools
-from typing import Tuple
+from typing import Optional, Tuple
 
 import tensorflow as tf
 import tensorflow_federated as tff
@@ -61,7 +61,7 @@ def _build_tokenize_fn(split_length=SEQUENCE_LENGTH + 1):
   """
   _, _, bos, eos = get_special_tokens()
 
-  ids = tf.range(1, len(CHAR_VOCAB) + 1, dtype=tf.int64)
+  ids = tf.range(len(CHAR_VOCAB), dtype=tf.int64)
   lookup_table = tf.lookup.StaticVocabularyTable(
       tf.lookup.KeyValueTensorInitializer(CHAR_VOCAB, ids), num_oov_buckets=1)
 
@@ -69,7 +69,7 @@ def _build_tokenize_fn(split_length=SEQUENCE_LENGTH + 1):
   def _to_tokens_and_pad(example: tf.Tensor) -> tf.Tensor:
     """Convert a Shakespeare example to a int64 tensor of token ids, and pad."""
     chars = tf.strings.bytes_split(example['snippets'])
-    tokens = lookup_table.lookup(keys=chars)
+    tokens = lookup_table.lookup(keys=chars) + 1  # Reserve 0 for pad.
     tokens = tf.concat([[bos], tokens, [eos]], 0)
     pad_length = (-tf.shape(tokens)[0]) % split_length
     return tf.concat([tokens, tf.zeros(pad_length, dtype=tf.int64)], 0)
@@ -155,25 +155,50 @@ def construct_character_level_datasets(client_batch_size: int,
   return preprocessed_train_client_data
 
 
-def construct_centralized_datasets(batch_size: int = EVAL_BATCH_SIZE,
-                                   sequence_length: int = SEQUENCE_LENGTH,
-                                   shuffle_buffer_size: int = 0):
-  """Loads and preprocesses centralized training and test Shakespeare datasets."""
+def get_centralized_datasets(train_batch_size: int,
+                             test_batch_size: Optional[int] = 100,
+                             max_train_batches: Optional[int] = None,
+                             max_test_batches: Optional[int] = None,
+                             sequence_length: Optional[int] = SEQUENCE_LENGTH,
+                             shuffle_buffer_size: Optional[int] = 10000):
+  """Loads and preprocesses centralized Shakespeare datasets.
+
+  Args:
+    train_batch_size: The batch size for the training dataset.
+    test_batch_size: The batch size for the test dataset.
+    max_train_batches: If set to a positive integer, this specifies the maximum
+      number of batches to use from the training dataset.
+    max_test_batches: If set to a positive integer, this specifies the maximum
+      number of batches to use from the test dataset.
+    sequence_length: The number of characters in each example.
+    shuffle_buffer_size: The shuffle buffer size for the training dataset. If
+      set to nonpositive number, no shuffling occurs.
+
+  Returns:
+    train_dataset: A `tf.data.Dataset` instance representing the training
+      dataset.
+    test_dataset: A `tf.data.Dataset` instance representing the test dataset.
+  """
   train_client_data, test_client_data = (
       tff.simulation.datasets.shakespeare.load_data())
 
-  eval_train_dataset = convert_snippets_to_character_sequence_examples(
+  train_dataset = convert_snippets_to_character_sequence_examples(
       train_client_data.create_tf_dataset_from_all_clients(),
-      batch_size=batch_size,
+      batch_size=train_batch_size,
       epochs=1,
       shuffle_buffer_size=shuffle_buffer_size,
       sequence_length=sequence_length)
 
-  eval_test_dataset = convert_snippets_to_character_sequence_examples(
+  test_dataset = convert_snippets_to_character_sequence_examples(
       test_client_data.create_tf_dataset_from_all_clients(),
-      batch_size=batch_size,
+      batch_size=test_batch_size,
       epochs=1,
-      shuffle_buffer_size=shuffle_buffer_size,
+      shuffle_buffer_size=0,
       sequence_length=sequence_length)
 
-  return eval_train_dataset, eval_test_dataset
+  if max_train_batches is not None and max_train_batches > 0:
+    train_dataset = train_dataset.take(max_train_batches)
+  if max_test_batches is not None and max_test_batches > 0:
+    test_dataset = test_dataset.take(max_test_batches)
+
+  return train_dataset, test_dataset

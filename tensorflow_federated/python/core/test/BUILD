@@ -16,11 +16,10 @@ py_library(
     srcs = ["__init__.py"],
     visibility = [
         "//tensorflow_federated:__pkg__",
-        "//tensorflow_federated/python/core:__pkg__",
     ],
     deps = [
         ":static_assert",
-        "//tensorflow_federated/python/core/impl:reference_executor",
+        "//tensorflow_federated/python/core/impl/context_stack:set_default_context",
     ],
 )
 

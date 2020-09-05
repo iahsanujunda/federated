@@ -18,7 +18,7 @@ import collections
 import itertools
 import operator
 import typing
-from typing import Callable, Dict, Set, Tuple
+from typing import Callable, Set, Tuple
 
 from tensorflow_federated.python.common_libs import py_typecheck
 from tensorflow_federated.python.common_libs import structure
@@ -309,7 +309,14 @@ def transform_postorder_with_symbol_bindings(comp, transform, symbol_tree):
     source, source_modified = _transform_postorder_with_symbol_bindings_switch(
         comp.source, transform, context_tree, identifier_seq)
     if source_modified:
-      comp = building_blocks.Selection(source, comp.name, comp.index)
+      # Normalize selection to index based on the type signature of the
+      # original source. The new source may not have names present.
+      if comp.index is not None:
+        index = comp.index
+      else:
+        index = structure.name_to_index_map(
+            comp.source.type_signature)[comp.name]
+      comp = building_blocks.Selection(source, index=index)
     comp, comp_modified = transform(comp, context_tree)
     return comp, comp_modified or source_modified
 
@@ -1150,10 +1157,38 @@ def has_unique_names(comp):
   return unique
 
 
+class BuildingBlockKeyedMapping(collections.abc.MutableMapping):
+  """Dictlike structure keyed by `building_blocks.ComputationBuildingBlocks`."""
+
+  def __init__(self):
+    self._comps = []
+    self._mapping = {}
+
+  def __delitem__(self, comp: building_blocks.ComputationBuildingBlock):
+    del self._mapping[id(comp)]
+    self._comps.remove(comp)
+
+  def __getitem__(self, comp: building_blocks.ComputationBuildingBlock):
+    comp_id = id(comp)
+    return self._mapping[comp_id]
+
+  def __iter__(self):
+    return (x for x in self._comps)
+
+  def __len__(self):
+    return len(self._mapping)
+
+  def __setitem__(self, comp: building_blocks.ComputationBuildingBlock,
+                  value: Set[str]):
+    if comp not in self._comps:
+      self._comps.append(comp)
+    self._mapping[id(comp)] = value
+
+
 def get_map_of_unbound_references(
     comp: building_blocks.ComputationBuildingBlock
-) -> Dict[building_blocks.ComputationBuildingBlock, Set[str]]:
-  """Gets a Python `dict` of the unbound references in `comp`.
+) -> BuildingBlockKeyedMapping:
+  """Gets a Python `dict` of unbound references in `comp`, keyed by Python `id`.
 
   Compuations that are equal will have the same collections of unbounded
   references, so it is safe to use `comp` as the key for this `dict` even though
@@ -1168,7 +1203,7 @@ def get_map_of_unbound_references(
     subtree of that compuation.
   """
   py_typecheck.check_type(comp, building_blocks.ComputationBuildingBlock)
-  references = {}
+  references = BuildingBlockKeyedMapping()
 
   def _update(comp):
     """Updates the Python dict of references."""

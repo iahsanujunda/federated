@@ -31,7 +31,7 @@ from tensorflow_federated.python.research.utils import utils_impl
 from tensorflow_federated.python.research.utils.datasets import stackoverflow_dataset
 from tensorflow_federated.python.research.utils.models import stackoverflow_models
 
-with utils_impl.record_new_flags() as hparam_flags:
+with utils_impl.record_new_flags():
   # Training hyperparameters
   flags.DEFINE_integer('clients_per_round', 10,
                        'How many clients to sample per round.')
@@ -78,6 +78,25 @@ with utils_impl.record_new_flags() as hparam_flags:
       'per_vector_clipping', False, 'Use per-vector clipping'
       'to indepednelty clip each weight tensor instead of the'
       'entire model.')
+
+with utils_impl.record_new_flags() as training_loop_flags:
+  flags.DEFINE_integer('total_rounds', 200, 'Number of total training rounds.')
+  flags.DEFINE_string(
+      'experiment_name', None, 'The name of this experiment. Will be append to '
+      '--root_output_dir to separate experiment results.')
+  flags.DEFINE_string('root_output_dir', '/tmp/differential_privacy/',
+                      'Root directory for writing experiment output.')
+  flags.DEFINE_boolean(
+      'write_metrics_with_bz2', True, 'Whether to use bz2 '
+      'compression when writing output metrics to a csv file.')
+  flags.DEFINE_integer(
+      'rounds_per_eval', 1,
+      'How often to evaluate the global model on the validation dataset.')
+  flags.DEFINE_integer('rounds_per_checkpoint', 50,
+                       'How often to checkpoint the global model.')
+  flags.DEFINE_integer(
+      'rounds_per_profile', 0,
+      '(Experimental) How often to run the experimental TF profiler, if >0.')
 
 FLAGS = flags.FLAGS
 
@@ -151,28 +170,25 @@ def main(argv):
         adaptive_clip_learning_rate=FLAGS.adaptive_clip_learning_rate,
         target_unclipped_quantile=FLAGS.target_unclipped_quantile,
         clipped_count_budget_allocation=FLAGS.clipped_count_budget_allocation,
-        expected_num_clients=FLAGS.clients_per_round,
+        expected_clients_per_round=FLAGS.clients_per_round,
         per_vector_clipping=FLAGS.per_vector_clipping,
         model=model_fn())
 
-    dp_aggregate_fn, _ = tff.utils.build_dp_aggregate(dp_query)
+    weights_type = tff.learning.framework.weights_type_from_model(model_fn)
+    aggregation_process = tff.utils.build_dp_aggregate_process(
+        weights_type.trainable, dp_query)
   else:
-    dp_aggregate_fn = None
+    aggregation_process = None
 
   server_optimizer_fn = optimizer_utils.create_optimizer_fn_from_flags('server')
   client_optimizer_fn = optimizer_utils.create_optimizer_fn_from_flags('client')
-  training_process = (
-      tff.learning.federated_averaging.build_federated_averaging_process(
-          model_fn=model_fn,
-          server_optimizer_fn=server_optimizer_fn,
-          client_weight_fn=client_weight_fn,
-          client_optimizer_fn=client_optimizer_fn,
-          stateful_delta_aggregate_fn=dp_aggregate_fn))
 
-  adaptive_clipping = (FLAGS.adaptive_clip_learning_rate > 0)
-  training_process = dp_utils.DPFedAvgProcessAdapter(training_process,
-                                                     FLAGS.per_vector_clipping,
-                                                     adaptive_clipping)
+  iterative_process = tff.learning.build_federated_averaging_process(
+      model_fn=model_fn,
+      server_optimizer_fn=server_optimizer_fn,
+      client_weight_fn=client_weight_fn,
+      client_optimizer_fn=client_optimizer_fn,
+      aggregation_process=aggregation_process)
 
   client_datasets_fn = training_utils.build_client_datasets_fn(
       train_dataset, FLAGS.clients_per_round)
@@ -196,8 +212,16 @@ def main(argv):
   logging.info('Training model:')
   logging.info(model_builder().summary())
 
+  hparam_dict = utils_impl.lookup_flag_values(utils_impl.get_hparam_flags())
+  training_loop_dict = utils_impl.lookup_flag_values(training_loop_flags)
+
   training_loop.run(
-      training_process, client_datasets_fn, evaluate_fn, test_fn=test_fn)
+      iterative_process=iterative_process,
+      client_datasets_fn=client_datasets_fn,
+      validation_fn=evaluate_fn,
+      test_fn=test_fn,
+      hparam_dict=hparam_dict,
+      **training_loop_dict)
 
 
 if __name__ == '__main__':

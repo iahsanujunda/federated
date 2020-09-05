@@ -15,41 +15,6 @@
 
 import tensorflow_federated as tff
 
-from tensorflow_federated.python.research.utils import adapters
-
-
-class DPFedAvgProcessAdapter(adapters.IterativeProcessPythonAdapter):
-  """Converts iterative process results from anonymous tuples.
-
-  Converts to ServerState and unpacks metrics, including adding the vector
-  clips as metrics.
-  """
-
-  def __init__(self, iterative_process, per_vector_clipping, adaptive_clipping):
-    self._iterative_process = iterative_process
-    self._per_vector_clipping = per_vector_clipping
-    self._adaptive_clipping = adaptive_clipping
-
-  def _get_clip(self, state):
-    return state.numerator_state.sum_state.l2_norm_clip
-
-  def initialize(self):
-    return self._iterative_process.initialize()
-
-  def next(self, state, data):
-    state, metrics = self._iterative_process.next(state, data)
-    if self._adaptive_clipping:
-      if self._per_vector_clipping:
-        metrics.update({
-            ('clip_' + str(i)): self._get_clip(vector_state)
-            for i, vector_state in enumerate(state.delta_aggregate_state)
-        })
-      else:
-        metrics.update({'clip': self._get_clip(state.delta_aggregate_state)})
-
-    outputs = None
-    return adapters.IterationResult(state, metrics, outputs)
-
 
 def assign_weights_to_keras_model(reference_model, keras_model):
   """Assign the model weights to the weights of a `tf.keras.Model`.

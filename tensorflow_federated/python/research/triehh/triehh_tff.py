@@ -89,6 +89,7 @@ def build_triehh_process(
   def server_init_tf():
     return ServerState(
         discovered_heavy_hitters=tf.constant([], dtype=tf.string),
+        heavy_hitters_counts=tf.constant([], dtype=tf.int32),
         discovered_prefixes=tf.constant([''], dtype=tf.string),
         round_num=tf.constant(0, dtype=tf.int32),
         accumulated_votes=tf.zeros(
@@ -104,6 +105,7 @@ def build_triehh_process(
           ServerState(
               discovered_heavy_hitters=tff.TensorType(
                   dtype=tf.string, shape=[None]),
+              heavy_hitters_counts=tff.TensorType(dtype=tf.int32, shape=[None]),
               discovered_prefixes=tff.TensorType(dtype=tf.string, shape=[None]),
               round_num=tff.TensorType(dtype=tf.int32, shape=[]),
               accumulated_votes=tff.TensorType(
@@ -130,12 +132,12 @@ def build_triehh_process(
   round_num_type = tff.TensorType(dtype=tf.int32, shape=[])
 
   @tff.tf_computation(tf_dataset_type, discovered_prefixes_type, round_num_type)
-
   def client_update_fn(tf_dataset, discovered_prefixes, round_num):
     return client_update(tf_dataset, discovered_prefixes,
                          tf.constant(possible_prefix_extensions), round_num,
                          num_sub_rounds, max_num_prefixes,
-                         max_user_contribution)
+                         max_user_contribution,
+                         tf.constant(default_terminator, dtype=tf.string))
 
   federated_server_state_type = tff.FederatedType(server_state_type, tff.SERVER)
   federated_dataset_type = tff.FederatedType(
